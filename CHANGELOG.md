@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.2 · 2026-10-13
+
+### Changed
+- GitHub Pages deploy uses `actions/upload-pages-artifact@v4`, matching GitHub's current Pages documentation (`configure-pages@v5`, `upload-pages-artifact@v4`, `deploy-pages@v4`). v4's one breaking change, excluding dotfiles from the uploaded site, does not affect this project: `src/` contains none.
+
+
 ## 1.3.1 · 2026-10-13
 
 Assurance clean-up after the fourth adversarial review. No change to the simulation's behaviour.
