@@ -83,7 +83,7 @@ function updateReadouts(){
     $('rbaMode').style.color = P.rule ? 'var(--phosphor)' : 'var(--red)';
     $('rbaNext').textContent = 'next meeting ' + eng.dateStr(s.nextMeet);
     const d = f.istar - s.i, call = !P.rule ? `manual: move to <b>${P.iManual.toFixed(2)}%</b>` : d > .2 ? 'next meeting: <b>hike 25bp</b>' : d < -.2 ? (s.i <= 0.11 ? 'at the floor: <b>QE does the work</b>' : 'next meeting: <b>cut 25bp</b>') : 'next meeting: <b>hold</b>';
-    $('rbaRule').innerHTML = `<div class="eq">rule = 0.60 neutral real + ${s.pi.toFixed(2)} inflation + ${P.phiPi.toFixed(1)}×(${s.pi.toFixed(2)} − ${P.target.toFixed(2)}) + ${P.phiY.toFixed(1)}×(${f.gap.toFixed(2)} gap)</div><div class="eq">= <b>${f.istar.toFixed(2)}%</b> · ${call}</div>`;
+    $('rbaRule').innerHTML = `<div class="eq">rule = 0.60 neutral real + ${s.pi.toFixed(2)} underlying inflation + ${P.phiPi.toFixed(1)}×(${s.pi.toFixed(2)} − ${P.target.toFixed(2)}) + ${P.phiY.toFixed(1)}×(${f.gap.toFixed(2)} gap)</div><div class="eq">= <b>${f.istar.toFixed(2)}%</b> · ${call}</div>`;
     const moves = s.log.slice(-8).reverse();
     $('rbaLog').innerHTML = moves.length ? moves.map(l => `<li><span>${eng.dateStr(l[0])}</span><span class="${l[1]>0?'up':l[1]<0?'dn':'muted'}">${l[1]===0?'hold':(l[1]>0?'+':'')+(l[1]*100).toFixed(0)+'bp'}</span><span>${l[2].toFixed(2)}%</span></li>`).join('') : '<li><span class="muted">No meetings yet in this run</span></li>';
   }
@@ -139,7 +139,7 @@ function drawRecorder(){
       const x = xOf(h.t), y = clamp(yOf(h[se.key], ax), T, B);
       if (!i) ctx.moveTo(x,y); else if (se.step){ const py = clamp(yOf(pts[i-1][se.key], ax), T, B); ctx.lineTo(x,py); ctx.lineTo(x,y); } else ctx.lineTo(x,y);
     });
-    ctx.strokeStyle = se.col; ctx.lineWidth = se.w; ctx.stroke();
+    ctx.strokeStyle = se.col; ctx.lineWidth = se.w; ctx.setLineDash(se.dash || []); ctx.stroke(); ctx.setLineDash([]);
     const h = pts[pts.length-1]; ctx.fillStyle = se.col; ctx.beginPath(); ctx.arc(xOf(h.t), clamp(yOf(h[se.key], ax),T,B), 3, 0, Math.PI*2); ctx.fill();
   });
   if (rec.markers){

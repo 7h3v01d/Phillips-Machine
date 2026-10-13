@@ -121,7 +121,7 @@
   <div class="notes" id="notesModern" hidden>
     <div>
       <h3>What changed since 1949</h3>
-      <p>The central bank no longer rations a stock of money. It sets the cash rate to steer inflation toward 2–3%, using a rule that responds to inflation and the output gap, and it moves in 25-point steps at eight meetings a year. That is the RBA box at the top of the board.</p>
+      <p>The central bank no longer rations a stock of money. It sets the cash rate to steer inflation toward 2–3%, using a rule that responds to underlying (trimmed-mean) inflation and the output gap, so it can look through temporary energy spikes in headline CPI, and it moves in 25-point steps at eight meetings a year. That is the RBA box at the top of the board.</p>
       <p>Most money is now created by commercial banks when they lend. New mortgage credit is a tap that adds water to the economy; repayments drain it away. Mortgage interest is the Australian cash-flow channel: higher rates pull money out of borrowers' spending almost immediately.</p>
       <p>Deficits are financed by selling bonds out of savings, and the RBA can buy bonds (QE) to inject money when the cash rate hits its floor. Capital flows chase the gap between Australian and US rates and move the dollar, which moves exports, imports and imported inflation.</p>
     </div>
@@ -129,7 +129,7 @@
       <h3>Calibration, October 2026</h3>
       <div class="tablewrap"><table class="calib">
         <tr><td>Cash rate (raised 30 Sep 2026)</td><td>4.60%</td></tr>
-        <tr><td>CPI, year to Aug 2026 / trimmed mean</td><td>4.0% / 3.6%</td></tr>
+        <tr><td>Headline CPI / trimmed mean (the model's underlying inflation), year to Aug 2026</td><td>4.0% / 3.6%</td></tr>
         <tr><td>Unemployment, Aug 2026</td><td>4.6%</td></tr>
         <tr><td>NAIRU / neutral cash rate (RBA staff, 2025)</td><td>≈4.5% / ≈3.1%</td></tr>
         <tr><td>Household saving ratio, Jun qtr 2026</td><td>6.5%</td></tr>
@@ -140,23 +140,24 @@
         <tr><td>AUD/USD</td><td>≈0.70</td></tr>
         <tr><td>Household debt, RBA bond holdings, mortgage spread</td><td>approximate</td></tr>
       </table></div>
-      <p style="margin-top:6px">This is a stylised teaching model calibrated to those figures, not a forecast. It has no trend growth, so the public debt ratio uses the textbook erosion term <code>(2% + inflation)·debt</code>.</p>
+      <p style="margin-top:6px">This is a stylised teaching model calibrated to those figures, not a forecast. Money moves only through pipes: an empty tank throttles its outlets, and only bank lending, repayment and QE change the total, which the test-suite checks at every step. It has no trend growth, so the public debt ratio uses the textbook erosion term <code>(2% + inflation)·debt</code>.</p>
     </div>
     <div>
       <h3>Key equations</h3>
       <ul>
-        <li>RBA rule: <code>i* = 0.6 + π + φπ(π − 2.5) + φy·gap</code>, moved 25bp per meeting</li>
-        <li>Inflation: <code>π → πᵉ + 0.25·gap − AUD pass-through + oil</code>; expectations learn from π and are pulled toward 2.5%</li>
+        <li>RBA rule on underlying inflation: <code>i* = 0.6 + π + φπ(π − 2.5) + φy·gap</code>, moved 25bp per meeting</li>
+        <li>Underlying inflation: <code>π → πᵉ + 0.25·gap − AUD pass-through + 0.3·energy</code>; headline CPI <code>= π + energy</code>, where energy ≈ 4% × year-ended change in oil prices</li>
+        <li>Expectations learn from headline CPI and are pulled toward the target</li>
         <li>Credit: <code>L = credit·L̄(1 − 0.10(i − πᵉ − 0.6))</code>, repayments <code>D/75</code>; mortgage interest <code>(i + spread)·D</code></li>
         <li>Capital inflow <code>∝ (i − i_US)</code>; AUD follows foreign-held balances and commodity prices</li>
         <li>Unemployment <code>u = 4.5 − 0.5·gap</code> (Okun)</li>
       </ul>
       <h3 style="margin-top:10px">Sources</h3>
       <ul>
-        <li><a href="https://www.commbank.com.au/articles/newsroom/2026/09/rba-official-cash-rate-decision-september-2026.html" target="_blank" rel="noopener">CommBank: RBA raises cash rate to 4.60%</a></li>
+        <li><a href="https://www.rba.gov.au/statistics/cash-rate/" target="_blank" rel="noopener">RBA: cash rate target</a> (corroborated by <a href="https://www.commbank.com.au/articles/newsroom/2026/09/rba-official-cash-rate-decision-september-2026.html" target="_blank" rel="noopener">CommBank</a>)</li>
         <li><a href="https://www.abs.gov.au/media-centre/media-releases/cpi-rose-40-year-august-2026" target="_blank" rel="noopener">ABS: CPI rose 4.0% in the year to August 2026</a></li>
         <li><a href="https://www.abs.gov.au/media-centre/media-releases/unemployment-rate-rises-46-august" target="_blank" rel="noopener">ABS: Unemployment rate rises to 4.6% in August</a></li>
-        <li><a href="https://www.qgso.qld.gov.au/issues/3381/national-accounts-202606.pdf" target="_blank" rel="noopener">QGSO: National accounts, June qtr 2026</a></li>
+        <li><a href="https://www.abs.gov.au/media-centre/media-releases/australian-economy-grew-04-june-quarter" target="_blank" rel="noopener">ABS: National accounts, June qtr 2026</a></li>
         <li><a href="https://treasury.nt.gov.au/__data/assets/pdf_file/0004/1616026/gross-domestic-product-2026-march-quarter.pdf" target="_blank" rel="noopener">NT Treasury: GDP components, March qtr 2026</a></li>
         <li><a href="https://budget.gov.au/content/myefo/download/03_Part_3.pdf" target="_blank" rel="noopener">MYEFO 2025–26, Part 3</a></li>
         <li><a href="https://www.livewiremarkets.com/wires/the-rba-trims-the-neutral-policy-rate-and-lowers-potential-output-productivity-growth-the-nairu" target="_blank" rel="noopener">Livewire: RBA neutral rate and NAIRU</a></li>

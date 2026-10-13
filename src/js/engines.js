@@ -4,6 +4,41 @@
 // Each engine owns its parameters, state, board drawing, controls and experiments.
 'use strict';
 
+/* ================= Hydraulic flow solver ================= */
+// The economics proposes flows; the plumbing decides what can actually move. A tank can only
+// deliver what it holds plus what flows into it during the step, so when its outlets ask for
+// more, all of them are throttled together (an emptying tank loses pressure on every pipe).
+// Limiting flows before integrating makes conservation structural: no stock is ever clamped,
+// so no water is ever created or destroyed except through edges to or from `null` (outside).
+//   stocks: { name: level }   edges: [{ from, to, q }] with from/to a stock name or null
+function solveFlows(stocks, edges, dt){
+  const dir = edges.map(e => e.q >= 0 ? { src:e.from, dst:e.to, mag:e.q } : { src:e.to, dst:e.from, mag:-e.q });
+  const k = {}; for (const n in stocks) k[n] = 1;
+  const factor = n => (n !== null && n in k) ? k[n] : 1;
+  for (let it = 0; it < 500; it++){
+    let change = 0;
+    for (const n in stocks){
+      let inflow = 0, out = 0;
+      for (const d of dir){ if (d.dst === n) inflow += d.mag*factor(d.src); if (d.src === n) out += d.mag; }
+      const avail = Math.max(0, stocks[n]/dt + inflow);
+      const next = Math.min(k[n], out > avail ? avail/out : 1);   // factors only ever fall, so this converges
+      change = Math.max(change, k[n] - next); k[n] = next;
+    }
+    if (change < 1e-15) break;
+  }
+  const q = dir.map((d, i) => (edges[i].q >= 0 ? 1 : -1) * d.mag*factor(d.src));
+  // integrate with the feasible flows
+  let created = 0;
+  edges.forEach((e, i) => {
+    if (e.from !== null) stocks[e.from] -= q[i]*dt; else created += q[i];
+    if (e.to !== null) stocks[e.to] += q[i]*dt; else created -= q[i];
+  });
+  for (const n in stocks) if (stocks[n] < 0 && stocks[n] > -1e-9) stocks[n] = 0;   // float round-off only
+  const out = { k, created, by:{} };
+  edges.forEach((e, i) => { if (e.k) out.by[e.k] = q[i]; });
+  return out;
+}
+
 /* ================= ENGINE 1: Phillips 1949 ================= */
 const CLASSIC = (() => {
   const DEFAULTS = {tax:.20, G:20, s:.15, m:.15, b:2, acc:0, omo:0, X0:10, speed:1, floating:true, deficit:true,
@@ -16,35 +51,40 @@ const CLASSIC = (() => {
   E.init = () => { E.st = {Yout:80, TB:80, SB:50, Tr:30, FB:40, Ysm:80, dYsm:0, t:0, hist:[], nextSample:0, f:{}, integ:0, Gpol:0, demand:0, iae:0}; E.step(0.0001); };
   E.step = (dt) => {
     const st = E.st;
-    const Y = st.Yout;
-    const T = p.tax * Y, Yd = Y - T;
-    const S = p.s * Yd, Cn = Yd - S;
+    const Yp = st.Yout;                       // output the economy is trying to produce
+    const T0 = p.tax * Yp, Yd0 = Yp - T0;
+    const S0 = p.s * Yd0, C0 = Yd0 - S0;
     const e = p.floating ? clamp(1 + 0.6*(st.FB-40)/40, 0.5, 2.2) : 1;
-    let X = p.X0 * Math.pow(e, 0.9);
-    const Im = clamp(p.m/Math.pow(e,0.6), 0, 0.9) * Cn;
-    if (st.FB < 0.5) X = Math.min(X, Im);
+    const X0 = p.X0 * Math.pow(e, 0.9);
+    const Im0 = clamp(p.m/Math.pow(e,0.6), 0, 0.9) * C0;
     const r = clamp(12 - 0.14*st.SB, 0.5, 15);
-    let I = Math.max(0, 12 + p.b*(5 - r) + p.acc*st.dYsm);
-    let omo = p.omo; if (omo < 0 && st.SB < 0.5) omo = 0;
-    if (st.SB < 0.5) I = Math.min(I, S + Math.max(0, omo));
-    const gap = p.Ytgt - Y;
+    const I0 = Math.max(0, 12 + p.b*(5 - r) + p.acc*st.dYsm);
+    const gap = p.Ytgt - Yp;
     if (p.gov){
       st.integ = clamp(st.integ + gap*dt, -300, 300);
       st.demand = p.Kp*gap + p.Ki*st.integ + p.Kd*(-st.dYsm);
       st.iae += Math.abs(gap)*dt;
     } else { st.integ = 0; st.demand = 0; }
     st.Gpol += (st.demand - st.Gpol) * dt / p.Tlag;
-    let G = clamp(p.G + st.Gpol, 0, 90), borrow = 0, repay = 0;
-    if (st.Tr < 0.5){
-      if (p.deficit && st.SB > 0.5) borrow = Math.max(0, G - T);
-      else G = Math.min(G, T);
+    let G0 = clamp(p.G + st.Gpol, 0, 90), borrow0 = 0, repay0 = 0;
+    if (st.Tr < 0.5){                          // policy choice: borrow idle balances, or spend only what taxes bring in
+      if (p.deficit && st.SB > 0.5) borrow0 = Math.max(0, G0 - T0);
+      else G0 = Math.min(G0, T0);
     }
-    if (st.Tr > 90) repay = (st.Tr - 90) * 2;
-    const Cdom = Cn - Im, Ex = Cdom + I + G + X;
-    st.TB = Math.max(0, st.TB + (Ex - Y)*dt);
-    st.SB = Math.max(0, st.SB + (S - I - borrow + omo + repay)*dt);
-    st.Tr = Math.max(0, st.Tr + (T - G + borrow - repay)*dt);
-    st.FB = Math.max(0, st.FB + (Im - X)*dt);
+    if (st.Tr > 90) repay0 = (st.Tr - 90) * 2;
+    // Pipes between tanks. Domestic consumption leaves and re-enters the transactions tank, so it is not an edge.
+    const tanks = { TB:st.TB, SB:st.SB, Tr:st.Tr, FB:st.FB };
+    const sol = solveFlows(tanks, [
+      {k:'T',  from:'TB', to:'Tr', q:T0},  {k:'S', from:'TB', to:'SB', q:S0},  {k:'Im', from:'TB', to:'FB', q:Im0},
+      {k:'G',  from:'Tr', to:'TB', q:G0},  {k:'I', from:'SB', to:'TB', q:I0},  {k:'X',  from:'FB', to:'TB', q:X0},
+      {k:'borrow', from:'SB', to:'Tr', q:borrow0}, {k:'repay', from:'Tr', to:'SB', q:repay0},
+      {k:'omo', from:null, to:'SB', q:p.omo}
+    ], dt);
+    Object.assign(st, tanks);
+    st.acct = { created: sol.created, k: sol.k };
+    const q = sol.by, kY = sol.k.TB;           // kY < 1 only when the transactions tank runs dry
+    const Y = Yp*kY, T = q.T, S = q.S, Im = q.Im, Yd = Y - T, Cn = Yd - S, Cdom = Cn - Im;
+    const I = q.I, G = q.G, X = q.X, Ex = Cdom + I + G + X;
     if (p.Tprod > 0.01) st.Yout += (st.TB - st.Yout) * dt / p.Tprod; else st.Yout = st.TB;
     const prev = st.Ysm;
     st.Ysm += (st.Yout - st.Ysm) * dt / 1.5;
@@ -52,7 +92,7 @@ const CLASSIC = (() => {
     st.t += dt;
     const u = clamp(1.5 + 30*(1 - Y/YF), 0.6, 14);
     const w = -0.9 + 9.638*Math.pow(u, -1.394);
-    st.f = {Y,T,Yd,S,C:Cn,Im,Cdom,I,G,X,E:Ex,omo,borrow,repay,r,e,u,w, Gpol:st.Gpol, gap, backlog: st.TB - st.Yout};
+    st.f = {Y,T,Yd,S,C:Cn,Im,Cdom,I,G,X,E:Ex,omo:q.omo,borrow:q.borrow,repay:q.repay,r,e,u,w, Gpol:st.Gpol, gap, backlog: st.TB - st.Yout};
     if (st.t >= st.nextSample){
       st.hist.push({t:st.t, Y, r, FB:st.FB, u, w, gap, Gpol:st.Gpol, demand:st.demand, gov:p.gov});
       if (st.hist.length > 480) st.hist.shift();
@@ -171,7 +211,7 @@ const CLASSIC = (() => {
     ['Governor: P only', () => govTest(.8, 0, 0, 1), '<b>Proportional policy only.</b> Exports collapse from 10 to 4. Unaided, income would sink to about 84. P control holds it near 92, but a permanent gap remains, because spending only rises while there is an error to react to. Error score ends near 600.'],
     ['Governor: P + I', () => govTest(.8, .8, 0, 1), '<b>Add integral action.</b> The integral keeps building until the gap is closed, so income gets back to target. But the two-quarter production lag means policy keeps pushing after the turn: income swings between about 86 and 110 for years before it settles. Error score near 250.'],
     ['Governor: P + I + D', () => govTest(.8, .8, 3, 1), '<b>Same gains, plus derivative action.</b> Policy now also leans against the rate of change of income, so it eases off while the recovery is still accelerating. Income settles within a couple of years, inside 96 to 101. This is the mix Phillips argued for. Error score near 40.'],
-    ['Governor: lag wrecks it', () => govTest(1, 1, 0, 2), '<b>Stronger gains and a half-year policy lag on top of the production lag.</b> Each correction lands after the economy has already turned, so every swing is bigger than the last: income runs from about 47 to 151 within twenty years. Then set Kd to 3 and watch derivative action pull it back (error score drops from about 1,170 to about 130).']
+    ['Governor: lag wrecks it', () => govTest(1, 1, 0, 2), '<b>Stronger gains and a half-year policy lag on top of the production lag.</b> Each correction lands after the economy has already turned, so policy amplifies the swings: income runs between about 80 and 111 in the first five years and the error score ends near 360, nine times the P + I + D result. It stops short of exploding only because the governor\'s deficits drain the Treasury and the surplus-balances tank dry by year four: with no idle money left to borrow, the plumbing itself caps what policy can spend. Then set Kd to 3 and watch derivative action calm it (income held within about 95 to 104, error score near 130).']
   ];
   E.startCaption = 'The machine is starting with the transactions tank part-empty. Watch income climb and settle where leakages (taxes, saving, imports) match injections (government, investment, exports).';
   E.resetCaption = 'Reset to the 1949 settings. Income settles near 100 with balanced budget and trade.';
@@ -212,9 +252,11 @@ const MODERN = (() => {
   E.sub = 'The same hydraulic idea rebuilt for Australia in October 2026: an inflation-targeting Reserve Bank, banks that create money by lending, public debt and QE, and a floating dollar pushed around by capital flows and commodity prices.';
   E.boardTitle = 'Hydraulic board · Australia 2026';
   E.init = () => {
-    E.st = {Yout:99.8, TB:99.8,   // 99.8 puts unemployment at 4.6%, the Aug 2026 figure
-      SV:K.SV0, FB:K.FB0, D:400, B:106, Bcb:30, e:1, eSlow:1, oilI:1, oilS:0,
-      i:4.6, pi:3.6, pie:3.5, Ysm:99.8, dYsm:0, t:0, nextMeet:0.4, log:[], hist:[], nextSample:0, f:{}};
+    // Yout 99.8 puts unemployment at 4.6% (Aug 2026). pi is underlying (trimmed-mean) inflation, 3.6%;
+    // headline CPI = pi + hE = 4.0%, the extra 0.4 being fuel and electricity.
+    E.st = {Yout:99.8, TB:99.8,
+      SV:K.SV0, FB:K.FB0, D:400, B:106, Bcb:30, e:1, eSlow:1, oilI:1, oilSlow:1,
+      i:4.6, pi:3.6, hE:0.4, pie:3.5, Ysm:99.8, dYsm:0, t:0, nextMeet:0.4, log:[], hist:[], nextSample:0, f:{}};
     E.st.f = flows(E.st); E.st.f.istar = ruleRate(E.st, E.st.f.gap);
   };
   function ruleRate(st, gap){ return K.rn + st.pi + p.phiPi*(st.pi - p.target) + p.phiY*gap; }
@@ -226,7 +268,9 @@ const MODERN = (() => {
     const Div = MI - DI, Ret = retain*Y;
     const Tn = T - Bint;
     const Yd = Y - Tn - Ret - MI - R + 0.5*Div;
-    const S = p.s*Yd, Cn = Math.max(0, Yd - S + p.conf);
+    // Confidence shifts the split of disposable income between spending and saving. Saving is the residual,
+    // so C + S = Yd always holds and a confidence shock never creates or destroys money.
+    const Cn = Math.max(0, (1 - p.s)*Yd + p.conf), S = Yd - Cn;
     const L = Math.max(0, p.credit*Ln*(1 - K.aL*(rreal - K.rn)));
     const Ib = Math.max(0, Ibn*(1 - K.aI*(rb - 0.4 - st.pie - K.rn)) + p.acc*st.dYsm);
     const M = K.m*(Cn + Ib + L)*Math.pow(st.e, .5)*(1 + 0.08*(st.oilI - 1));
@@ -236,10 +280,9 @@ const MODERN = (() => {
     const Def = G - Tn;
     let q = p.qe;
     if (p.qeAuto && st.i <= 0.11 && gap < -1) q += Math.min(8, -1.5*gap);
-    if (q < 0) q = Math.max(q, -st.Bcb*4);   // cannot sell bonds the RBA does not hold
     const Kin = (K.m*69.8 - K.X0) + 1.0*((i - p.iw) - 0.85);
     return {Y,gap,u,i,rreal,rb,T,Tn,MI,R,Bint,DI,Div,Ret,Yd,S,C:Cn,L,Ib,M,X,G,E:Ex,Def,q,Kin,
-      MP:MI+R, Div2:0.5*Div, DIsv:DI+0.5*Div, Cd:Cn-M, pi:st.pi, pie:st.pie, aud:K.AUD0*st.e,
+      MP:MI+R, Div2:0.5*Div, DIsv:DI+0.5*Div, Cd:Cn-M, pi:st.pi, cpi:st.pi + st.hE, pie:st.pie, aud:K.AUD0*st.e,
       mort:i+p.spread, hhDebt:st.D/4, pubDebt:(st.B+st.Bcb)/4, rbaBonds:st.Bcb/4, nx:X-M, gdpBn:Y*K.bn,
       backlog: st.TB - st.Yout, cash:i};
   }
@@ -251,21 +294,43 @@ const MODERN = (() => {
   })();
   E.step = (dt) => {
     const s = E.st, f = flows(s);
-    s.TB = Math.max(0, s.TB + (f.E - f.Y)*dt);
-    s.SV = Math.max(0, s.SV + (f.S + f.Ret + f.DIsv + f.Kin + f.q - f.Ib - f.Def)*dt);
-    s.FB = Math.max(0, s.FB + (f.M - f.X - f.Kin)*dt);
-    s.D = Math.max(0, s.D + (f.L - f.R)*dt);
-    const gN = (2 + s.pi)/400;
-    s.B = Math.max(0, s.B + (f.Def - f.q - gN*s.B)*dt);
-    s.Bcb = Math.max(0, s.Bcb + (f.q - gN*s.Bcb)*dt);
+    // Bond-ledger limits: the RBA cannot buy bonds nobody holds, or sell bonds it does not own.
+    let qWant = f.q;
+    const gN0 = (2 + s.pi)/400;
+    if (qWant > 0) qWant = Math.min(qWant, Math.max(0, s.B/dt - gN0*s.B + Math.max(0, f.Def)));
+    else qWant = Math.max(qWant, -(s.Bcb/dt - gN0*s.Bcb));
+    // Pipes between money tanks; `null` is outside the economy (bank credit creation and repayment, RBA reserves).
+    // Taxes, government spending financed by those taxes, bank interest paid back out and domestic consumption
+    // all leave and re-enter the deposits tank, so they are not edges.
+    const tanks = { TB:s.TB, SV:s.SV, FB:s.FB };
+    const sol = solveFlows(tanks, [
+      {k:'S',   from:'TB', to:'SV', q:f.S},   {k:'Ret', from:'TB', to:'SV', q:f.Ret}, {k:'DIsv', from:'TB', to:'SV', q:f.DIsv},
+      {k:'Ib',  from:'SV', to:'TB', q:f.Ib},  {k:'Def', from:'SV', to:'TB', q:f.Def},
+      {k:'M',   from:'TB', to:'FB', q:f.M},   {k:'X',   from:'FB', to:'TB', q:f.X},   {k:'Kin', from:'FB', to:'SV', q:f.Kin},
+      {k:'L',   from:null, to:'TB', q:f.L},   {k:'R',   from:'TB', to:null, q:f.R},   {k:'q',   from:null, to:'SV', q:qWant}
+    ], dt);
+    Object.assign(s, tanks);
+    const a = sol.by;
+    s.acct = { created: sol.created, k: sol.k, L:a.L, R:a.R, q:a.q, Def:a.Def };
+    // Ledgers (records, not water) follow the flows that actually happened.
+    const gN = gN0;                            // nominal growth erodes debt ratios
+    s.D += (a.L - a.R)*dt;
+    s.B += (a.Def - a.q - gN*s.B)*dt;
+    s.Bcb += (a.q - gN*s.Bcb)*dt;
+    if (s.Bcb < 0 && s.Bcb > -1e-9) s.Bcb = 0;   // float round-off only
+    // Exchange rate
     const eT = clamp(1 - 0.15*(s.FB - K.FB0)/K.FB0 + 0.3*(p.cp - 1), .55, 1.6);
     s.e += (eT - s.e)*dt/3; s.eSlow += (s.e - s.eSlow)*dt/4;
-    const oPrev = s.oilI; s.oilI += (p.oil - s.oilI)*dt/2;
-    const oilInfl = dt > 0.001 ? (s.oilI/oPrev - 1)/dt*400 : 0;
-    s.oilS += (oilInfl - s.oilS)*dt/0.5;
-    const piT = s.pie + K.kappa*f.gap - 10*(s.e - s.eSlow) + 0.08*s.oilS;
+    // Inflation. Headline CPI = underlying + an energy term; an oil price level shock moves year-ended
+    // fuel inflation (≈4% CPI weight) and then fades as the new price level drops out of the year.
+    s.oilI += (p.oil - s.oilI)*dt/2;
+    s.oilSlow += (s.oilI - s.oilSlow)*dt/4;
+    s.hE += (4*(s.oilI/s.oilSlow - 1) - s.hE)*dt/0.5;
+    // Underlying inflation: expectations, the output gap, AUD pass-through and second-round energy effects.
+    const piT = s.pie + K.kappa*f.gap - 10*(s.e - s.eSlow) + 0.3*s.hE;
     s.pi += (piT - s.pi)*dt/2.0;
-    s.pie += (K.lam*(s.pi - s.pie) + K.anchor*(p.target - s.pie))*dt;
+    // Households and firms form expectations from the headline number they see, anchored by the target.
+    s.pie += (K.lam*((s.pi + s.hE) - s.pie) + K.anchor*(p.target - s.pie))*dt;
     if (p.Tprod > .01) s.Yout += (s.TB - s.Yout)*dt/p.Tprod; else s.Yout = s.TB;
     const prev = s.Ysm; s.Ysm += (s.Yout - s.Ysm)*dt/1.5; s.dYsm = dt > 0.001 ? (s.Ysm - prev)/dt : 0;
     s.t += dt;
@@ -280,9 +345,12 @@ const MODERN = (() => {
       if (s.log.length > 120) s.log.shift();
       s.i = clamp(s.i + mv, .1, 15);
     }
-    s.f = flows(s); s.f.istar = istar;
+    s.f = Object.assign(flows(s), { istar });
+    // Pipes show the flows that actually ran this step.
+    for (const key of ['S','Ret','DIsv','Ib','Def','M','X','Kin','R','q']) s.f[key] = a[key];
+    s.f.MP = s.f.MI + a.R; s.f.Cd = s.f.C - a.M;
     if (s.t >= s.nextSample){
-      s.hist.push({t:s.t, Y:s.Yout, i:s.i, pi:s.pi, u:s.f.u, pie:s.pie});
+      s.hist.push({t:s.t, Y:s.Yout, i:s.i, pi:s.pi, cpi:s.pi + s.hE, u:s.f.u, pie:s.pie});
       if (s.hist.length > 480) s.hist.shift();
       s.nextSample += 0.25;
     }
@@ -353,8 +421,10 @@ const MODERN = (() => {
     drawTank(ctx, tanks.SV, s.SV, {t:`bond yield ${f.rb.toFixed(2)}%`});
     drawTank(ctx, tanks.FB, s.FB, {t:`AUD ${f.aud.toFixed(3)} US`});
     drawTank(ctx, tanks.TB, s.TB, {t:`GDP A$${f.gdpBn.toFixed(0)}bn/q`, c:C.muted});
-    // CPI thermometer with 2–3% target band
-    drawGauge(ctx, 512, 250, 140, clamp(s.pi/8, 0, 1), 'CPI %', s.pi.toFixed(2), [2/8, 3/8]);
+    // Underlying-inflation thermometer with the 2–3% target band; headline CPI printed beneath
+    drawGauge(ctx, 512, 250, 140, clamp(s.pi/8, 0, 1), 'TRIM %', s.pi.toFixed(2), [2/8, 3/8]);
+    ctx.font=`500 9px ${FONT}`; ctx.fillStyle=C.muted; ctx.textBaseline='top'; ctx.textAlign='left';
+    ctx.fillText(`CPI ${f.cpi.toFixed(1)}`, 510, 416);
     // debt ledgers (liabilities, not money)
     ctx.font=`700 8px ${FONT}`; ctx.fillStyle=C.muted; ctx.textBaseline='top'; ctx.textAlign='left';
     ctx.fillText('LEDGERS · debts are records, not water', 14, 606);
@@ -369,12 +439,13 @@ const MODERN = (() => {
   E.pumpRate = () => 0.5 + E.st.f.Y/25;
   E.readouts = [
     ['gdpBn','GDP A$bn/q',v=>v.toFixed(0),()=>'hot'],['gap','Output gap',v=>sgn(v)+v.toFixed(1)+'%',v=> v<-2?'bad':v>2?'warm':''],
-    ['cash','Cash rate',v=>v.toFixed(2)+'%',()=>'warm'],['pi','CPI infl.',v=>v.toFixed(2)+'%',v=> v>3||v<2?(v>4||v<1?'bad':'warm'):'hot'],
+    ['cash','Cash rate',v=>v.toFixed(2)+'%',()=>'warm'],['pi','Underlying',v=>v.toFixed(2)+'%',v=> v>3||v<2?(v>4||v<1?'bad':'warm'):'hot'],
+    ['cpi','Headline CPI',v=>v.toFixed(2)+'%'],
     ['pie','Expectations',v=>v.toFixed(2)+'%'],['u','Unemploy.',v=>v.toFixed(2)+'%',v=> v>6?'bad':v>5?'warm':''],
     ['aud','AUD/USD',v=>v.toFixed(3)],['mort','Mortgage rate',v=>v.toFixed(2)+'%'],
     ['hhDebt','H/hold debt',v=>v.toFixed(0)+'% GDP'],['pubDebt','Public debt',v=>v.toFixed(1)+'% GDP'],
     ['rbaBonds','RBA bonds',v=>v.toFixed(1)+'% GDP'],['nx','Net exports',v=>sgn(v)+v.toFixed(1)+'% GDP'],
-    ['L','New credit',v=>v.toFixed(1)+'/q'],['Def','Deficit',v=>v.toFixed(1)+'% GDP'],
+    ['Def','Deficit',v=>v.toFixed(1)+'% GDP'],
     ['rreal','Real cash rate',v=>sgn(v)+v.toFixed(2)+'%',v=> v>1.5?'warm':'']
   ];
   E.value = k => E.st.f[k];
@@ -383,12 +454,12 @@ const MODERN = (() => {
       {id:'target', label:'Inflation target (midpoint)', min:1, max:4, step:.25, fmt:v=>v.toFixed(2)+'%'},
       {id:'phiPi', label:'Response to inflation φπ', min:0, max:2, step:.1, fmt:v=>v.toFixed(1)},
       {id:'phiY', label:'Response to output gap φy', min:0, max:1.5, step:.1, fmt:v=>v.toFixed(1)},
-      {id:'iManual', label:'Cash rate when on manual', min:.1, max:10, step:.25, fmt:v=>v.toFixed(2)+'%'},
+      {id:'iManual', label:'Cash rate when on manual', min:.1, max:9.85, step:.25, fmt:v=>v.toFixed(2)+'%'},
       {id:'qe', label:'QE (+) / QT (−) bond buying', min:-4, max:10, step:.5, fmt:v=>(v>0?'+':'')+v.toFixed(1)+' /q'}],
       toggles:[{id:'rule', label:'Inflation-targeting rule (off = manual cash rate)'},{id:'qeAuto', label:'Automatic QE at the lower bound'}]},
     {name:'Government', sliders:[
       {id:'G', label:'Government spending (% of GDP)', min:18, max:40, step:.5, fmt:v=>v.toFixed(1)+'%'},
-      {id:'tax', label:'Net tax rate (taxes less transfers)', min:.18, max:.38, step:.005, fmt:v=>(v*100).toFixed(1)+'%'}]},
+      {id:'tax', label:'Net tax rate (taxes less transfers)', min:.18, max:.38, step:.001, fmt:v=>(v*100).toFixed(1)+'%'}]},
     {name:'Households and banks', sliders:[
       {id:'s', label:'Household saving ratio', min:0, max:.2, step:.005, fmt:v=>(v*100).toFixed(1)+'%'},
       {id:'conf', label:'Consumer confidence shift', min:-10, max:5, step:.5, fmt:v=>(v>0?'+':'')+v.toFixed(1)+' /q'},
@@ -406,11 +477,11 @@ const MODERN = (() => {
   const fresh = (fn) => () => { E.resetParams(); E.init(); fn(); };
   E.scenarios = [
     ['Baseline outlook', fresh(()=>{}), '<b>Starting point: October 2026.</b> Cash rate 4.60%, trimmed-mean inflation 3.6%, unemployment 4.6%. Under this rule, inflation drifts back toward the top of the 2–3% band and the RBA trims to about 3.6% within a year, then settles between about 3.85% and 4.1%. Unemployment peaks near 5%. Markets and the banks currently lean toward a hold or further hikes, so treat this as the model\'s path, not a forecast.'],
-    ['Oil shock', fresh(()=>{ p.oil = 1.6; }), '<b>Oil prices up 60% over about six months.</b> Fuel and freight push CPI to a peak above 6%. The rule responds to inflation, so the RBA hikes to about 6.35%, unemployment climbs past 7% and the economy goes through a stagflation year. As the oil price stops rising, inflation falls back and the RBA cuts hard, to about 2.35%.'],
+    ['Oil shock', fresh(()=>{ p.oil = 1.6; }), '<b>Oil prices up 60% over about six months.</b> Fuel lifts headline CPI to a peak of about 4.6% while underlying (trimmed-mean) inflation keeps easing. The RBA\'s rule targets underlying inflation, so it looks through the spike, as central banks generally do with supply shocks, and does not hike. The dearer import bill still drains spending, and unemployment rises to about 5.5%. Watch the dashed headline line part company with the solid underlying line on the recorder.'],
     ['Iron ore slump', fresh(()=>{ p.cp = .7; }), '<b>Commodity export prices fall 30%.</b> Export income drops and unemployment jumps above 8%. The AUD slides toward the low 0.50s, which is the shock absorber: it makes exports competitive again and lifts import prices, so the RBA cuts to about 1.35% and then has to hike again as the recovery overshoots.'],
     ['Housing credit boom', fresh(()=>{ p.credit = 1.4; }), '<b>Lending standards loosen: credit appetite up 40%.</b> New loans create new deposits, so spending and inflation hold up and the RBA keeps the cash rate between 4.1% and 4.85% instead of easing. The lasting result is on the ledger: household debt climbs from about 100% to over 110% of GDP, which makes the economy more sensitive to every future rate rise.'],
-    ['Deep recession and QE', fresh(()=>{ p.conf = -8; }), '<b>Households cut spending sharply.</b> Unemployment heads toward 9–10%. The RBA cuts 25bp at every meeting to the 0.1% floor. With the cash rate stuck there, automatic QE starts buying bonds: watch the QE pipe open and the hatched RBA share of public debt rise to near 30% of GDP, as in 2020–21.'],
-    ['US rates +2 points', fresh(()=>{ p.iw = 5.75; }), '<b>The Fed raises US rates by two points.</b> Capital flows out toward higher US yields, the AUD falls to about 0.65, and imported inflation keeps CPI above target for longer. The RBA still trims to 3.85% in the first year, but then has to climb back to 4.6–4.85% instead of settling near 3.9%.'],
+    ['Deep recession and QE', fresh(()=>{ p.conf = -8; }), '<b>Households cut spending sharply and save the difference.</b> Unemployment heads toward 9–10%. The RBA cuts 25bp at every meeting to the 0.1% floor. With the cash rate stuck there, automatic QE starts buying bonds: watch the QE pipe open and the hatched RBA share of public debt rise to about 27% of GDP, as in 2020–21.'],
+    ['US rates +2 points', fresh(()=>{ p.iw = 5.75; }), '<b>The Fed raises US rates by two points.</b> Capital flows out toward higher US yields, the AUD falls to about 0.65, and imported inflation keeps inflation above target for longer. The RBA still trims to 3.85% in the first year, but then has to climb back to 4.6–4.85% instead of settling near 3.9%.'],
     ['Fiscal stimulus', fresh(()=>{ p.G = 30.5; }), '<b>Government spending up 2% of GDP.</b> Unemployment falls below 4% and inflation stays near 3.3%, so the RBA leans against it with a hike to about 5.35%. The deficit widens and public debt rises from 34% toward 49% of GDP over ten years: the RBA and Treasury pulling in opposite directions.'],
     ['RBA freezes rates', fresh(()=>{ p.rule = false; p.iManual = 4.6; }), '<b>The RBA stops following its rule and holds 4.60% for a decade.</b> As inflation and expectations fall, the real rate keeps rising, so the squeeze tightens on its own. Unemployment drifts above 7% and inflation slides below zero. A rate that looks unchanged is not a neutral policy.']
   ];
@@ -421,14 +492,14 @@ const MODERN = (() => {
   E.recorder = {
     left:{min:90, max:110, ticks:[90,95,100,105,110], col:C.phosphor, fmt:v=>String(v)},
     right:{min:0, max:8, ticks:[0,2,4,6,8], col:C.amber, fmt:v=>v+'%'},
-    series:[{key:'u', col:C.teal, w:1.2, axis:'right'},{key:'pi', col:C.red, w:1.6, axis:'right'},{key:'i', col:C.amber, w:2, axis:'right', step:true},{key:'Y', col:C.phosphor, w:2, axis:'left'}],
+    series:[{key:'u', col:C.teal, w:1.2, axis:'right'},{key:'cpi', col:C.red, w:1, axis:'right', dash:[4,3]},{key:'pi', col:C.red, w:1.8, axis:'right'},{key:'i', col:C.amber, w:2, axis:'right', step:true},{key:'Y', col:C.phosphor, w:2, axis:'left'}],
     band:{axis:'right', lo:2, hi:3, label:'RBA target 2–3%'},
     refs:() => [{axis:'left', v:100, col:'rgba(75,224,138,0.45)', label:'potential GDP'}],
     markers:(tStart) => E.st.log.filter(l => l[0] >= tStart && l[1] !== 0).map(l => ({t:l[0], v:l[2], up:l[1] > 0}))
   };
-  E.recLegend = '<span><i style="background:var(--phosphor)"></i>GDP (100 = potential)</span><span><i style="background:var(--amber)"></i>Cash rate (▲▼ RBA moves)</span><span><i style="background:var(--red)"></i>CPI inflation</span><span><i style="background:var(--teal)"></i>Unemployment</span>';
+  E.recLegend = '<span><i style="background:var(--phosphor)"></i>GDP (100 = potential)</span><span><i style="background:var(--amber)"></i>Cash rate (▲▼ RBA moves)</span><span><i style="background:var(--red)"></i>Underlying inflation (dashed: headline CPI)</span><span><i style="background:var(--teal)"></i>Unemployment</span>';
   E.pcTitle = 'Phillips curve, then and now'; E.pcTag = 'expectations-augmented';
-  E.pcLegend = '<span><i style="background:var(--amber)"></i>Short-run curve at today\'s expectations (shifts as they move)</span><span><i style="background:var(--muted)"></i>Phillips 1958 (ghost)</span><span><i style="background:var(--phosphor)"></i>Australia in the model</span>';
+  E.pcLegend = '<span><i style="background:var(--amber)"></i>Short-run curve at today\'s expectations (shifts as they move)</span><span><i style="background:var(--muted)"></i>Phillips 1958 (ghost)</span><span><i style="background:var(--phosphor)"></i>Australia in the model (underlying inflation)</span>';
   E.drawCurve = (ctx, xT, yT, T, B, R, L) => {
     const s = E.st;
     ctx.fillStyle='rgba(75,224,138,0.10)'; ctx.fillRect(L, yT(3), R-L, yT(2)-yT(3));
@@ -441,7 +512,7 @@ const MODERN = (() => {
     ctx.beginPath(); first = true;
     for (let u=0.5; u<=12; u+=0.1){ const pi = s.pie - 2*K.kappa*(u - K.nairu); const y = yT(pi); if (y < T || y > B) { first = true; continue; } first ? ctx.moveTo(xT(u),y) : ctx.lineTo(xT(u),y); first=false; }
     ctx.strokeStyle=C.amber; ctx.lineWidth=2; ctx.stroke();
-    return {ykey:'pi', ylab:'CPI inflation π →', cur:{u:s.f.u, y:s.pi, lab:`u ${s.f.u.toFixed(1)}%  π ${s.pi.toFixed(1)}%`}};
+    return {ykey:'pi', ylab:'underlying inflation π →', cur:{u:s.f.u, y:s.pi, lab:`u ${s.f.u.toFixed(1)}%  π ${s.pi.toFixed(1)}%`}};
   };
   E.side = 'rba';
   return E;

@@ -21,7 +21,9 @@
 
 In 1949 a New Zealand engineer-turned-economist, A.W.H. (Bill) Phillips, built a two-metre machine at the London School of Economics that computed the national economy with water. Coloured water stood for money. Tanks held stocks such as idle balances and the Treasury. Pipes carried flows such as income, taxes, saving, investment and trade. Slotted valves set the behavioural rules. He called it the **MONIAC** (Monetary National Income Analogue Computer). About fourteen were built, and working examples survive at Cambridge and at the Reserve Bank of New Zealand. The LSE's original is in the Science Museum, London.
 
-This project simulates that machine in the browser, faithfully enough to run Phillips's own experiments. It then asks what the same board looks like if you plumb in a modern economy: an inflation-targeting central bank, banks that create money by lending, public debt and quantitative easing, and a floating currency driven by capital flows. The modern board is calibrated to Australian data as of October 2026.
+This project recreates the machine's principal hydraulic relationships closely enough to explore experiments inspired by Phillips's work, including the PID stabilisation policy of his 1954 paper. It then asks what the same board looks like if you plumb in a modern economy: an inflation-targeting central bank, banks that create money by lending, public debt and quantitative easing, and a floating currency driven by capital flows. The modern board is calibrated to Australian data as of October 2026.
+
+Both boards are stock-flow consistent: money moves only through pipes, an emptying tank throttles its outlets instead of going negative, and only explicit creation (open-market operations; bank lending, repayment and QE) changes the total. The test-suite checks that at every step, across hundreds of randomly chosen legal settings.
 
 Everything runs client-side in plain HTML, CSS and JavaScript. There are no dependencies and no build step.
 
@@ -35,13 +37,14 @@ Switch between them with the toggle in the header. Each keeps its own state, so 
 | Where money comes from | A fixed stock of water, plus open-market operations | Bank lending creates deposits, repayments destroy them, and QE adds reserves |
 | Government | Treasury tank, which can borrow idle balances | Bonds sold out of savings; debt ledger with the RBA's share hatched |
 | External sector | Foreign-held balances and an optional floating rate | Capital flows chase the AUD–US rate gap; commodity prices and oil feed the dollar and CPI |
+| Inflation | Money wages, via the 1958 curve | Underlying (trimmed-mean) inflation drives the RBA rule; headline CPI adds energy on top |
 | Policy panel | Phillips's 1954 **PID Treasury governor** | **Reserve Bank board**: live rule arithmetic, next call, decision log |
 | Phillips curve | His 1958 fitted curve, `ẇ + 0.900 = 9.638·u^−1.394` | Expectations-augmented short-run curve, NAIRU line, 1958 curve as a ghost |
 
 <table>
 <tr>
 <td width="50%"><img src="docs/img/classic-1949.png" alt="The 1949 board running the trade-cycle experiment"><br><sub><b>1949 board</b>, trade-cycle experiment: the accelerator makes income overshoot and swing.</sub></td>
-<td width="50%"><img src="docs/img/oil-shock.png" alt="The modern board during an oil shock with the RBA hiking then cutting"><br><sub><b>2026 board</b>, oil shock: CPI spikes, the RBA hikes in 25bp steps, then cuts as the shock fades.</sub></td>
+<td width="50%"><img src="docs/img/oil-shock.png" alt="The modern board during an oil shock: headline CPI rises above underlying inflation while the RBA looks through it"><br><sub><b>2026 board</b>, oil shock: headline CPI (dashed) jumps above underlying inflation, and the RBA looks through the supply shock instead of hiking.</sub></td>
 </tr>
 </table>
 
@@ -53,7 +56,7 @@ Switch between them with the toggle in the header. Each keeps its own state, so 
 | **Local, no install** | Clone or download the repo and double-click `src/index.html` |
 | **Local server (Windows)** | Run `serve.bat` (uses Python), then open <http://localhost:8000> |
 | **Local server (any OS)** | `python -m http.server 8000 --directory src` |
-| **Single portable file** | `python tools/build_single_file.py` writes `dist/phillips-machine.html` with everything inlined |
+| **Single portable file** | `python tools/build_single_file.py` writes `dist/phillips-machine.html` with all application HTML, CSS and JS inlined (the optional web font stays external) |
 
 The page works offline. Only the JetBrains Mono web font is fetched from Google Fonts, and the page falls back to a system monospace font without it.
 
@@ -74,7 +77,9 @@ The page works offline. Only the JetBrains Mono web font is fetched from Google 
 
 ## How the model works
 
-Both boards integrate the same kind of system: stocks change by inflows minus outflows, with time measured in quarters (step 0.02 q). Money is conserved, and only explicit creation or destruction changes the total. The test-suite checks this.
+Both boards integrate the same kind of system: stocks change by inflows minus outflows, with time measured in quarters (step 0.02 q).
+
+Each step has two stages. First the economics proposes flows: how much people want to spend, save, import, lend and so on. Then a small **hydraulic solver** (`solveFlows` in [`engines.js`](src/js/engines.js)) checks every tank. A tank can deliver only what it holds plus what flows in during the step, so if its outlets ask for more, all of them are throttled together, like a tank losing pressure. Only then are the stocks updated. No stock is ever clamped, so no money is ever created or destroyed by accident, and the debt ledgers follow the flows that actually ran.
 
 <details>
 <summary><b>1949 board equations</b></summary>
@@ -83,11 +88,11 @@ Both boards integrate the same kind of system: stocks change by inflows minus ou
 |---|---|
 | Income | Output follows the transactions balances through a production lag, `dY/dt = (TB − Y)/τp` |
 | Transactions balances | `dTB/dt = C − Im + I + G + X − Y` |
-| Leakages | taxes `tY`, saving `s(Y − T)`, imports `m·C/e^0.6` |
+| Leakages | taxes `tY`, saving `s(Y − T)`, imports `m·C/e^0.6`; all throttled together if the transactions tank runs dry |
 | Interest-rate float | `r = 12 − 0.14·SB` (0.5–15%) |
 | Investment | `I = 12 + b(5 − r) + a·dY/dt` |
 | Exchange rate (floating) | `e = 1 + 0.6(FB − 40)/40`, exports `X₀·e^0.9` |
-| Treasury governor (Phillips 1954) | demand `D = Kp·gap + Ki·∫gap + Kd·d(gap)/dt`, applied through a policy lag `dΔG/dt = (D − ΔG)/τ` |
+| Treasury governor (Phillips 1954) | demand `D = Kp·gap + Ki·∫gap + Kd·d(gap)/dt`, applied through a policy lag `dΔG/dt = (D − ΔG)/τ`. Deficits are financed by borrowing idle balances, so the governor cannot spend money that is not there |
 | Unemployment (illustrative) | `u = 1.5 + 30(1 − Y/105)`%, mapped onto the 1958 curve |
 
 Coefficients give a steady state near Y ≈ 100. They are not Phillips's UK calibration.
@@ -100,14 +105,16 @@ Units: 100 = one quarter of potential GDP, about A$730bn. Rates and inflation ar
 
 | | |
 |---|---|
-| RBA rule | `i* = 0.6 + π + φπ(π − target) + φy·gap`; the cash rate moves 25bp toward `i*` at each meeting (floor 0.1%) |
-| Inflation | `π → πᵉ + 0.25·gap − AUD pass-through + oil pass-through`, with a two-quarter lag |
-| Expectations | `dπᵉ/dt = 0.12(π − πᵉ) + 0.10(target − πᵉ)`, adaptive but anchored |
+| RBA rule | `i* = 0.6 + π + φπ(π − target) + φy·gap` on **underlying** inflation; the cash rate moves 25bp toward `i*` at each meeting (floor 0.1%) |
+| Underlying inflation | `π → πᵉ + 0.25·gap − AUD pass-through + 0.3·energy`, with a two-quarter lag; starts at the 3.6% trimmed mean |
+| Headline CPI | `π + energy`, where energy ≈ 4% CPI weight × year-ended change in oil prices; starts at 4.0% |
+| Expectations | `dπᵉ/dt = 0.12(headline − πᵉ) + 0.10(target − πᵉ)`: people see headline prices, but expectations stay anchored |
 | Household income | `Yd = Y − net taxes − retained profits − mortgage interest and principal + bank payout` |
+| Consumption and saving | `C = (1 − s)·Yd + confidence`, `S = Yd − C`: confidence moves money between spending and saving, never in or out of existence |
 | Credit | new lending `L = credit·L̄·(1 − 0.10(i − πᵉ − 0.6))`, repayments `D/75`, mortgage rate `i + spread` |
 | Business investment | falls with the real bond yield; optional accelerator |
 | Public debt | `dB/dt = deficit − QE − (2% + π)·B`, where the last term is nominal growth eroding the ratio |
-| QE | slider-driven, or automatic at the lower bound when the output gap is below −1% |
+| QE | slider-driven, or automatic at the lower bound when the output gap is below −1%; the RBA can only buy bonds private holders own, and only sell bonds it holds |
 | Capital flows and AUD | inflow `∝ (i − i_US)`; AUD follows foreign-held balances and commodity prices |
 | Unemployment | Okun's law, `u = 4.5 − 0.5·gap` |
 
@@ -118,32 +125,38 @@ Retained profits are solved at load time so that spending equals output at neutr
 
 | Figure | Value | Source |
 |---|---|---|
-| Cash rate (raised 30 Sep 2026) | 4.60% | [CommBank Newsroom](https://www.commbank.com.au/articles/newsroom/2026/09/rba-official-cash-rate-decision-september-2026.html) |
-| CPI, year to Aug 2026 / trimmed mean | 4.0% / 3.6% | [ABS](https://www.abs.gov.au/media-centre/media-releases/cpi-rose-40-year-august-2026) |
+| Cash rate (raised 30 Sep 2026) | 4.60% | [RBA cash rate target](https://www.rba.gov.au/statistics/cash-rate/); corroborated by [CommBank](https://www.commbank.com.au/articles/newsroom/2026/09/rba-official-cash-rate-decision-september-2026.html) |
+| Headline CPI / trimmed mean, year to Aug 2026 | 4.0% / 3.6% | [ABS](https://www.abs.gov.au/media-centre/media-releases/cpi-rose-40-year-august-2026) |
 | Unemployment, Aug 2026 | 4.6% | [ABS](https://www.abs.gov.au/media-centre/media-releases/unemployment-rate-rises-46-august) |
-| NAIRU / neutral cash rate (RBA staff, 2025) | ≈4.5% / ≈3.1% | [Livewire](https://www.livewiremarkets.com/wires/the-rba-trims-the-neutral-policy-rate-and-lowers-potential-output-productivity-growth-the-nairu) |
-| Household saving ratio, Jun qtr 2026 | 6.5% | [QGSO](https://www.qgso.qld.gov.au/issues/3381/national-accounts-202606.pdf) |
-| Consumption / government / business investment / dwellings, % GDP | 51 / 28 / 13 / 5 | [NT Treasury](https://treasury.nt.gov.au/__data/assets/pdf_file/0004/1616026/gross-domestic-product-2026-march-quarter.pdf) |
+| NAIRU / neutral cash rate (RBA Statement on Monetary Policy, Aug 2025) | ≈4.5% / ≈3.1% | reported by [Livewire](https://www.livewiremarkets.com/wires/the-rba-trims-the-neutral-policy-rate-and-lowers-potential-output-productivity-growth-the-nairu) |
+| Household saving ratio, Jun qtr 2026 | 6.5% | [ABS](https://www.abs.gov.au/media-centre/media-releases/australian-economy-grew-04-june-quarter) |
+| Consumption / government / business investment / dwellings, % GDP | 51 / 28 / 13 / 5 | ABS national accounts via [NT Treasury](https://treasury.nt.gov.au/__data/assets/pdf_file/0004/1616026/gross-domestic-product-2026-march-quarter.pdf) (volume shares) |
 | Exports / imports, % GDP | 25 / 24 | as above |
 | Commonwealth deficit / gross debt 2025–26, % GDP | 1.3 / 34 | [MYEFO 2025–26](https://budget.gov.au/content/myefo/download/03_Part_3.pdf) |
-| AUD/USD | ≈0.70 | [OrbitRemit](https://blog.orbitremit.com/rba-rate-hike-september-2026/) |
+| AUD/USD | ≈0.70 | market report, [OrbitRemit](https://blog.orbitremit.com/rba-rate-hike-september-2026/) |
 | Household debt, RBA bond holdings, mortgage spread | approximate | stylised, labelled as such in the app |
 
-The calibration lives in the `K` constants and `init()` of the modern engine in [`src/js/engines.js`](src/js/engines.js). To refresh it after a new RBA decision or CPI release, update those numbers and run the tests. Tests that quote caption figures will tell you which experiment descriptions need new numbers.
+The calibration lives in the `K` constants and `init()` of the modern engine in [`src/js/engines.js`](src/js/engines.js). To refresh it after a new RBA decision or CPI release, update those numbers and run the tests. The invariant tests confirm the accounting still holds, and the regression tests tell you which experiment descriptions now quote stale numbers.
 
 ## Tests
 
 ```bash
-node --test        # or: npm test, or test.bat on Windows
+node --test                    # engine tests (or: npm test, or test.bat on Windows)
+python -m pytest tests/browser # browser smoke tests (see tests/browser/requirements.txt)
 ```
 
-The suite loads the engines headlessly, with no browser needed, and checks three things:
+The tests are split by what they can and cannot prove.
 
-- **Accounting identities.** Water is conserved on the 1949 board except for open-market operations. On the modern board, deposits change only through credit creation, repayment and QE.
-- **Calibration.** The modern board starts at the published October 2026 figures.
-- **Every claim on the page.** Each experiment's on-screen caption quotes numbers ("the RBA hikes to about 6.35%", "income runs from about 47 to 151"). A test reruns the experiment and asserts those numbers. Change the model and the tests will show you which captions are now wrong.
+| Category | File | What it establishes |
+|---|---|---|
+| **1. Invariants** | `tests/invariants.test.js` | Money is conserved **at every step** on both boards: across 300 seeded random combinations of legal slider settings each, with every tank forced empty, and through every experiment. Stocks never go negative, and the household and public debt ledgers match the flows that actually ran. |
+| **2. Behavioural properties** | `tests/invariants.test.js` | Mechanisms point the right way: confidence and the saving ratio move money between spending and saving without changing disposable income; a higher cash rate lowers credit and investment; QE swaps bonds for deposits one-for-one and never buys bonds that don't exist; the rule reads underlying, not headline, inflation; and every slider can reach its own minimum, maximum and default. |
+| **3. Regression** | `tests/engines.test.js` | The calibration starts at the published figures, and every number quoted in an experiment caption still comes out of the model. These pin behaviour so changes are deliberate; they do not validate the economics. |
+| **Browser smoke** | `tests/browser/test_smoke.py` | Run against both `src/` and the bundled single file: no console errors, canvases draw, every slider and toggle drives its parameter, scenarios and reset update UI and engine together, pause works, mode persists across reloads, reduced-motion is honoured, no horizontal scroll at phone width. |
 
-CI runs the suite on Node 18, 20 and 22, and the Pages workflow refuses to deploy if it fails.
+The random tests use a fixed seed, so any failure reproduces exactly; the failing settings are printed in the message. The invariant tests were checked against the previous engine and fail on it, so they catch the class of bug they were written for.
+
+CI runs the engine tests on Node 18, 20 and 22 and the browser suite in Chromium. The Pages workflow refuses to deploy if the engine tests fail.
 
 ## Project structure
 
@@ -156,17 +169,19 @@ phillips-machine/
 │       ├── draw.js          palette and canvas drawing helpers
 │       ├── engines.js       the two simulation engines, controls and experiments
 │       └── app.js           mode switch, UI, recorders, animation loop
-├── tests/                   headless Node tests (node:test)
+├── tests/                   engine tests (node:test) + browser/ smoke tests (pytest + Playwright)
 ├── tools/build_single_file.py   bundles src/ into one portable HTML file
 ├── docs/img/                screenshots
 ├── .github/workflows/       tests + GitHub Pages deploy
 ├── serve.bat · test.bat     Windows helpers
-├── CITATION.cff · NOTICE · LICENSE
+├── CHANGELOG.md · CITATION.cff · NOTICE · LICENSE
 ```
 
 ## Limitations
 
 - **A teaching model, not a forecast.** The modern board is a stylised, stock-flow-consistent sketch calibrated to real figures. In the baseline, the model's rule trims the cash rate within a year, while markets and banks in October 2026 leaned toward a hold or further hikes.
+- **Empty tanks throttle, they do not borrow.** When a tank runs dry its outflows shrink. The 1949 governor experiments show this: badly timed policy drains the idle balances, and the plumbing then caps what it can spend.
+- **A government with no debt left holds net assets.** A large enough surplus takes public debt below zero, shown as a negative ledger.
 - **No trend growth.** Flows are measured relative to potential output. The public-debt ratio uses the textbook growth-erosion term instead of modelling nominal GDP growth directly.
 - **Phillips's annual data is not included.** He never published the 1861–1957 series behind his 1958 curve. The panel shows his fitted equation, not the scatter.
 - **The 1949 coefficients are illustrative.** They reproduce the machine's behaviour, not its original UK calibration.
