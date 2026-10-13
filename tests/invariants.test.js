@@ -50,6 +50,15 @@ function stepResidual(E) {
   return (MONEY[E.id](E.st) - before) - applied(E, fPrev).created * DT;
 }
 
+// Every state variable that must stay finite, checked at every step by checkRun.
+const STATE = {
+  classic: ['TB', 'SB', 'Tr', 'FB', 'Yout', 'Ysm', 'Gpol', 'integ'],
+  modern:  ['TB', 'SV', 'FB', 'GA', 'D', 'B', 'Bcb', 'Yout', 'Ysm', 'pi', 'pie', 'hE', 'i', 'e']
+};
+
+// Balance-sheet records that must never go negative, checked every step alongside the money tanks.
+const LEDGERS = { classic: ['Yout'], modern: ['Yout', 'D', 'B', 'Bcb'] };
+
 function checkRun(E, quarters, label) {
   for (let k = 0; k < quarters / DT; k++) {
     const legacy = !E.st.acct, r = stepResidual(E);
@@ -57,6 +66,8 @@ function checkRun(E, quarters, label) {
     if (legacy && k === 0) continue;
     if (Math.abs(r) > TOL) assert.fail(`${label}: residual ${r.toExponential(3)} at step ${k}`);
     for (const t of TANKS[E.id]) if (!(E.st[t] >= 0)) assert.fail(`${label}: tank ${t} = ${E.st[t]} at step ${k}`);
+    for (const v of LEDGERS[E.id]) if (E.st[v] !== undefined && !(E.st[v] >= 0)) assert.fail(`${label}: ${v} = ${E.st[v]} at step ${k}`);
+    for (const v of STATE[E.id]) if (!Number.isFinite(E.st[v])) assert.fail(`${label}: ${v} = ${E.st[v]} at step ${k}`);
   }
 }
 
@@ -236,10 +247,6 @@ test('modern: bonds, RBA holdings, household debt and output never go negative; 
   assert.ok(MODERN.st.GA > 0, `persistent surplus should accumulate in the government account (GA = ${MODERN.st.GA})`);
 });
 
-const STATE = {
-  classic: ['TB', 'SB', 'Tr', 'FB', 'Yout', 'Ysm', 'Gpol', 'integ'],
-  modern:  ['TB', 'SV', 'FB', 'GA', 'D', 'B', 'Bcb', 'Yout', 'Ysm', 'pi', 'pie', 'hE', 'i', 'e']
-};
 for (const E of [CLASSIC, MODERN]) {
   test(`${E.id}: 80-quarter random runs stay finite, non-negative and conserving`, () => {
     const r = rng(E.id === 'classic' ? 81 : 82);
@@ -251,6 +258,7 @@ for (const E of [CLASSIC, MODERN]) {
         if (Math.abs(res) > TOL) assert.fail(`${where}: residual ${res}`);
         for (const v of STATE[E.id]) if (!Number.isFinite(s[v])) assert.fail(`${where}: ${v} = ${s[v]}`);
         for (const t of TANKS[E.id]) if (s[t] < 0) assert.fail(`${where}: ${t} = ${s[t]}`);
+        for (const v of LEDGERS[E.id]) if (!(s[v] >= 0)) assert.fail(`${where}: ${v} = ${s[v]}`);
       }
     }
   });
@@ -294,6 +302,65 @@ for (const E of [CLASSIC, MODERN]) {
       randomise(E, r);
       checkRun(E, 400, `${E.id} long run ${run} ${JSON.stringify(E.p)}`);
       for (const v of STATE[E.id]) assert.ok(Number.isFinite(E.st[v]), `${E.id} long run ${run}: ${v} = ${E.st[v]}`);
+    }
+  });
+}
+
+test('solver: the exact active-set solve matches an independent brute-force reference and settles in few passes', () => {
+  const { solveFlows } = require('./load-engines.js').loadEngines();
+  // Reference: the textbook monotone iteration, run to convergence. It finds the greatest feasible flow.
+  function reference(stocks, edges) {
+    const dir = edges.map(e => e.q >= 0 ? [e.from, e.to, e.q] : [e.to, e.from, -e.q]);
+    const k = {}; for (const n in stocks) k[n] = 1;
+    const f = n => (n !== null && n in k) ? k[n] : 1;
+    for (let it = 0; it < 200000; it++) {
+      let ch = 0;
+      for (const n in stocks) {
+        let inn = 0, out = 0;
+        for (const [s, d, m] of dir) { if (d === n) inn += m * f(s); if (s === n) out += m; }
+        const av = Math.max(0, stocks[n] / DT + inn), nk = Math.min(k[n], out > av ? av / out : 1);
+        ch = Math.max(ch, k[n] - nk); k[n] = nk;
+      }
+      if (ch < 1e-16) break;
+    }
+    return k;
+  }
+  const r = rng(2718), names = ['TB', 'SV', 'FB', 'GA'];
+  let maxPasses = 0;
+  for (let trial = 0; trial < 3000; trial++) {
+    const stocks = {}; for (const n of names) stocks[n] = r() < 0.4 ? 0 : r() < 0.5 ? r() * 1e-6 : r() * 100;
+    const edges = [];
+    const m = 3 + Math.floor(r() * 10);
+    for (let e = 0; e < m; e++) {
+      const pick = () => (r() < 0.15 ? null : names[Math.floor(r() * names.length)]);
+      let from = pick(), to = pick(); if (from === to) to = null; if (from === null && to === null) from = 'TB';
+      edges.push({ from, to, q: (r() < 0.2 ? -1 : 1) * r() * (r() < 0.3 ? 500 : 30) });
+    }
+    const ref = reference({ ...stocks }, edges);
+    const copy = { ...stocks }, sol = solveFlows(copy, edges, DT);
+    maxPasses = Math.max(maxPasses, sol.passes);
+    for (const n of names) {
+      assert.ok(Math.abs(sol.k[n] - ref[n]) < 1e-7, `trial ${trial}: ${n} throttle ${sol.k[n]} vs reference ${ref[n]}`);
+      assert.ok(copy[n] >= 0, `trial ${trial}: ${n} = ${copy[n]}`);
+    }
+  }
+  assert.ok(maxPasses <= 6, `active-set solve needed ${maxPasses} passes`);
+});
+
+
+/* ---------- v1.3: hermetic experiments ---------- */
+
+// An experiment must produce the same machine whatever state it is applied to, so tests (and users) never
+// depend on what ran before. Compare each experiment applied to a pristine engine and to a scrambled one.
+for (const E of [CLASSIC, MODERN]) {
+  test(`${E.id}: every experiment starts from a known state, whatever ran before`, () => {
+    const r = rng(E.id === 'classic' ? 5 : 6);
+    const snapshot = () => JSON.stringify({ p: E.p, st: E.st });
+    for (const [name, apply] of E.scenarios) {
+      E.reset(); apply(); const clean = snapshot();
+      randomise(E, r); for (let k = 0; k < 300; k++) E.step(DT);       // scramble parameters and state
+      apply(); const dirty = snapshot();
+      assert.equal(dirty, clean, `${E.id} "${name}" depends on the state it was applied to`);
     }
   });
 }

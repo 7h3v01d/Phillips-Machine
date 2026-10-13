@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.3.1 · 2026-10-13
+
+Assurance clean-up after the fourth adversarial review. No change to the simulation's behaviour.
+
+### Fixed
+- **The isolation checker could report tests as passing that never ran.** If a test file crashed during discovery, its tests vanished from the plan silently, and an isolated run counted as passing whenever Node printed `# pass 1`, which it also does when the name pattern matches nothing (it then reports the file itself as one passing test). The checker now fails on any discovery error, cross-checks the names it parsed against Node's own count, and only accepts an isolated run whose output contains an `ok` line for that exact test.
+- **A hanging test could stall the isolation check indefinitely.** Every subprocess now has a time limit (120 s per test by default, `ISOLATION_TIMEOUT_MS` to change it) and is reported as `TIMEOUT`.
+- **The checker misbehaved when started from inside a Node test run**, because nested `node --test` processes inherited `NODE_TEST_CONTEXT` and switched protocols. Found while testing the checker; its child processes now get a clean environment. The same applies to the checker's own `ISO_SINGLE` marker, which leaked into discovery when one checker ran inside another's isolated run (found when the hardened checker first ran the real suite).
+- **`CITATION.cff` declared a non-existent schema (`cff-version: 1.3.0`)**, introduced by the 1.3.0 version bump, which would break GitHub's "Cite this repository". Restored to 1.2.0.
+
+### Changed
+- `checkRun()` checks that every state variable is finite at every step, so every long run (not just the 80-quarter ones) backs the README's "at every step" statement.
+- Solver comment and README now say exactly what is normalised: sub-10⁻⁹ floating-point residue, never an impossible transfer.
+
+### Added
+- `tests/tooling.test.js`: the isolation checker run against throwaway projects (healthy, crashing, unmatchable name, hanging, order-dependent, inherited marker), its TAP parser, and a release-metadata consistency check.
+
+
+## 1.3.0 · 2026-10-13
+
+Response to the third adversarial review: assurance and release engineering. Each finding was reproduced first; each fix has tests that fail without it.
+
+### Fixed
+- **Tests were order-dependent.** Run on its own, "classic: every experiment conserves money" crashed: several 1949 experiments assumed an already-running machine. Every 1949 experiment now starts from a settled 1949 machine, as the modern ones already started from October 2026. A new test proves each experiment produces an identical machine whatever state it is applied to, and `tools/check_isolation.js` runs every test alone in a fresh process.
+- **GitHub Pages could deploy with failing browser tests.** The separate Pages workflow only ran the engine tests. One CI workflow now runs engine, isolation and browser jobs, and the deploy job depends on all three.
+- **Solver cost was state-dependent.** Profiling confirmed the reviewer's suspicion: in throttled states 61% of solver calls ran to the 200-iteration cap. The iteration is replaced by an exact active-set solve (one or two passes on average, checked against a brute-force reference on 3,000 random networks). The engine suite went from 67 to about 35 seconds while gaining tests; the century regression from 6.5 to 0.5 seconds.
+- **Three 1949 captions were wrong** (found while adding the missing caption tests): *Fiscal stimulus* rises about 19, not 24, because of crowding out; in *Paradox of thrift* saving nearly doubles rather than "barely rises", because Phillips's interest-rate float revives investment; in *Export boom* the floating rate prices away the whole boom, not part of it.
+
+### Changed
+- Long random runs now check that private bonds, RBA holdings, household debt and output stay non-negative at every step, so the README's coverage statement is literally true.
+- Clicking a 1949 experiment now restarts from the settled 1949 machine (previously it modified whatever was running).
+
+### Added
+- Regression tests for all seven non-governor 1949 captions, and a check that every experiment on both boards has one.
+- `npm run test:isolation`, `npm run test:browser`.
+
+
 ## 1.2.0 · 2026-10-13
 
 Response to the second adversarial review. Each finding was reproduced before fixing, and each fix has tests that fail without it.

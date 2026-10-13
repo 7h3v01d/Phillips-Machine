@@ -8,43 +8,55 @@
 // The economics proposes flows; the plumbing decides what can actually move. A tank can only
 // deliver what it holds plus what flows into it during the step, so when its outlets ask for
 // more, all of them are throttled together (an emptying tank loses pressure on every pipe).
-// Limiting flows before integrating makes conservation structural: no stock is ever clamped,
-// so no water is ever created or destroyed except through edges to or from `null` (outside).
+// Limiting flows before integrating makes conservation structural: no stock is repaired by clamping after an
+// impossible transfer. The only normalisation is sub-1e-9 floating-point residue being set to zero.
+// Water is created or destroyed only through edges to or from `null` (outside).
 //   stocks: { name: level }   edges: [{ from, to, q }] with from/to a stock name or null
 function solveFlows(stocks, edges, dt){
   const dir = edges.map(e => e.q >= 0 ? { src:e.from, dst:e.to, mag:e.q } : { src:e.to, dst:e.from, mag:-e.q });
-  const k = {}; for (const n in stocks) k[n] = 1;
+  const names = Object.keys(stocks);
+  const k = {}; for (const n of names) k[n] = 1;
   const factor = n => (n !== null && n in k) ? k[n] : 1;
-  // Fast iteration gives a good first guess at which tanks are short...
-  for (let it = 0; it < 200; it++){
-    let change = 0;
-    for (const n in stocks){
-      let inflow = 0, out = 0;
-      for (const d of dir){ if (d.dst === n) inflow += d.mag*factor(d.src); if (d.src === n) out += d.mag; }
-      const avail = Math.max(0, stocks[n]/dt + inflow);
-      const next = Math.min(k[n], out > avail ? avail/out : 1);   // factors only ever fall, so this converges
-      change = Math.max(change, k[n] - next); k[n] = next;
-    }
-    if (change < 1e-15) break;
-  }
-  // ...but tanks that feed each other (deposits ⇄ savings) can make it converge slowly, so finish exactly:
-  // for the short tanks, outflow·k = stock/dt + inflow is a small linear system, solved directly.
-  for (let pass = 0; pass < 8; pass++){
-    const A = Object.keys(k).filter(n => k[n] < 1);
-    if (!A.length) break;
-    const ix = {}; A.forEach((n, i) => ix[n] = i);
-    const Mx = A.map(() => A.map(() => 0)), b = A.map(n => stocks[n]/dt);
-    A.forEach((n, i) => {
-      for (const d of dir){
-        if (d.src === n) Mx[i][i] += d.mag;
-        if (d.dst === n){ if (d.src !== null && d.src in ix) Mx[i][ix[d.src]] -= d.mag; else b[i] += d.mag*factor(d.src); }
+  const outOf = {}; for (const n of names) outOf[n] = 0;
+  for (const d of dir) if (d.src !== null && d.src in outOf) outOf[d.src] += d.mag;
+  const avail = n => { let v = stocks[n]/dt; for (const d of dir) if (d.dst === n) v += d.mag*factor(d.src); return Math.max(0, v); };
+  const short = n => outOf[n] > avail(n)*(1 + 1e-12);
+  // Active-set solve. For the tanks that cannot cover their outlets, outflow·k = stock/dt + inflow is a small
+  // linear system (at most one equation per tank), solved exactly; tanks that turn out not to be short leave
+  // the set and newly short ones join, until the set is stable. Usually zero or one pass.
+  const A = new Set(names.filter(short));
+  let passes = 0, settled = A.size === 0;
+  while (!settled && passes < 16){
+    passes++;
+    for (const n of names) if (!A.has(n)) k[n] = 1;
+    const list = [...A], ix = {}; list.forEach((n, i) => ix[n] = i);
+    const Mx = list.map(() => list.map(() => 0)), b = list.map(n => stocks[n]/dt);
+    list.forEach((n, i) => {
+      Mx[i][i] = outOf[n];
+      for (const d of dir) if (d.dst === n){
+        if (d.src !== null && d.src in ix) Mx[i][ix[d.src]] -= d.mag; else b[i] += d.mag*factor(d.src);
       }
     });
     const x = gaussSolve(Mx, b);
-    if (!x) break;
-    let freed = false;
-    A.forEach((n, i) => { let v = x[i] > 0 ? x[i] : 0; if (v >= 1){ v = 1; freed = true; } k[n] = v; });
-    if (!freed) break;                         // a tank that turned out not to be short leaves the system; resolve
+    if (!x) break;                             // singular (pure circulation between empty tanks): use fallback
+    list.forEach((n, i) => { k[n] = Math.min(1, Math.max(0, x[i])); });
+    let changed = false;
+    for (const n of list) if (k[n] >= 1){ A.delete(n); changed = true; }
+    for (const n of names) if (!A.has(n) && short(n)){ A.add(n); changed = true; }
+    settled = !changed;
+  }
+  if (!settled){
+    // Fallback: monotone iteration from fully open valves. Factors only ever fall, so it converges to the
+    // same greatest feasible flow, just more slowly.
+    for (const n of names) k[n] = 1;
+    for (let it = 0; it < 10000; it++){
+      let change = 0;
+      for (const n of names){
+        const next = Math.min(k[n], outOf[n] > avail(n) ? avail(n)/outOf[n] : 1);
+        change = Math.max(change, k[n] - next); k[n] = next;
+      }
+      if (change < 1e-15) break;
+    }
   }
   const q = dir.map((d, i) => (edges[i].q >= 0 ? 1 : -1) * d.mag*factor(d.src));
   // integrate with the feasible flows
@@ -54,7 +66,7 @@ function solveFlows(stocks, edges, dt){
     if (e.to !== null) stocks[e.to] += q[i]*dt; else created -= q[i];
   });
   for (const n in stocks) if (stocks[n] < 0 && stocks[n] > -1e-9) stocks[n] = 0;   // float round-off only
-  const out = { k, created, by:{} };
+  const out = { k, created, by:{}, passes, settled };
   edges.forEach((e, i) => { if (e.k) out.by[e.k] = q[i]; });
   return out;
 }
@@ -227,21 +239,23 @@ const CLASSIC = (() => {
       {id:'Tprod', label:'Production lag τp (spending → output)', min:0, max:4, step:.25, fmt:v=>v===0?'none':v.toFixed(2)+' q'},
       {id:'speed', label:'Pump speed (sim time)', min:.25, max:4, step:.25, fmt:v=>v.toFixed(2)+'×'}]}
   ];
+  // Every experiment starts from the same settled 1949 machine, whatever was running before.
+  function settle(){ E.resetParams(); E.init(); for (let i=0;i<1500;i++) E.step(0.02); }
+  const fresh = fn => () => { settle(); fn(); };
   function govTest(Kp, Ki, Kd, Tlag){
-    E.resetParams(); p.Tprod = 2; E.init();
-    for (let i=0;i<1500;i++) E.step(0.02);
+    settle();
     p.Ytgt = Math.round(E.st.f.Y);
     Object.assign(p, {gov:true, Kp, Ki, Kd, Tlag, X0:4});
     E.st.integ = 0; E.st.iae = 0;
   }
   E.scenarios = [
-    ['Fiscal stimulus', () => { p.G = 30; }, '<b>G raised from 20 to 30.</b> The Treasury drains faster than taxes refill it. Income rises by about 10 ÷ 0.42 ≈ 24 (the multiplier), then deficit borrowing from idle balances pushes up r and crowds out some investment.'],
-    ['Austerity', () => { p.G = 12; p.tax = .25; }, '<b>G cut to 12, tax raised to 25%.</b> The budget swings to surplus and income falls. Watch unemployment climb along the Phillips curve and wage growth turn negative.'],
-    ['Paradox of thrift', () => { p.s = .30; }, '<b>Saving doubled to 30%.</b> More water diverts to idle balances, so spending and income fall. Total saving barely rises because incomes shrink. Lower r only partly revives investment.'],
-    ['Credit squeeze', () => { E.st.SB = Math.max(0, E.st.SB - 35); p.omo = -1; }, '<b>The monetary authority sells bonds</b> and keeps draining idle balances. The float drops, the interest rate climbs and investment falls away.'],
-    ['Export boom', () => { p.X0 = 18; }, '<b>Foreign demand nearly doubles.</b> Foreign-held balances run down, the currency appreciates (exchange-rate index falls) and part of the boom leaks back out through dearer exports and cheaper imports.'],
-    ['Trade cycle', () => { p.acc = 2.4; E.st.TB += 25; }, '<b>Accelerator set to 2.4 and income given a shove.</b> Investment now chases growth, so the economy overshoots and swings: the oscillating dynamics Phillips set out in the 1950 Economica paper.'],
-    ['Fixed exchange rate', () => { p.floating = false; p.m = .25; }, '<b>Peg the exchange rate and raise import appetite.</b> Nothing corrects the trade deficit, so foreign-held balances pile up and money drains out of the domestic economy.'],
+    ['Fiscal stimulus', fresh(() => { p.G = 30; }), '<b>G raised from 20 to 30.</b> The Treasury drains faster than taxes refill it. The simple multiplier, 10 ÷ 0.42, would add about 24 to income; it actually peaks about 19 higher, because deficit borrowing drains idle balances, the interest rate climbs from about 5% to over 7% and investment is crowded out.'],
+    ['Austerity', fresh(() => { p.G = 12; p.tax = .25; }), '<b>G cut to 12, tax raised to 25%.</b> The budget swings to surplus and income falls. Watch unemployment climb along the Phillips curve and wage growth turn negative.'],
+    ['Paradox of thrift', fresh(() => { p.s = .30; }), '<b>Saving doubled to 30%.</b> Spending falls and income drops to about 91. Yet total saving nearly doubles: the extra idle money lowers the interest rate below 1%, and investment rises to match it. In Keynes\'s pure paradox, with investment fixed, saving could not rise at all; Phillips\'s interest-rate float is what rescues it here.'],
+    ['Credit squeeze', fresh(() => { E.st.SB = Math.max(0, E.st.SB - 35); p.omo = -1; }), '<b>The monetary authority sells bonds</b> and keeps draining idle balances. The float drops, the interest rate climbs and investment falls away.'],
+    ['Export boom', fresh(() => { p.X0 = 18; }), '<b>Foreign demand nearly doubles.</b> Income jumps to about 109 and foreign-held balances run down, so the currency appreciates (the exchange-rate index falls from 1.0 to under 0.7). With a floating rate that appreciation eventually prices the whole boom away, and income drifts back to where it started.'],
+    ['Trade cycle', fresh(() => { p.acc = 2.4; E.st.TB += 25; }), '<b>Accelerator set to 2.4 and income given a shove.</b> Investment now chases growth, so the economy overshoots and swings: the oscillating dynamics Phillips set out in the 1950 Economica paper.'],
+    ['Fixed exchange rate', fresh(() => { p.floating = false; p.m = .25; }), '<b>Peg the exchange rate and raise import appetite.</b> Nothing corrects the trade deficit, so foreign-held balances pile up and money drains out of the domestic economy.'],
     ['Governor: P only', () => govTest(.8, 0, 0, 1), '<b>Proportional policy only.</b> Exports collapse from 10 to 4. Unaided, income would sink to about 84. P control holds it near 92, but a permanent gap remains, because spending only rises while there is an error to react to. Error score ends near 600.'],
     ['Governor: P + I', () => govTest(.8, .8, 0, 1), '<b>Add integral action.</b> The integral keeps building until the gap is closed, so income gets back to target. But the two-quarter production lag means policy keeps pushing after the turn: income swings between about 86 and 110 for years before it settles. Error score near 250.'],
     ['Governor: P + I + D', () => govTest(.8, .8, 3, 1), '<b>Same gains, plus derivative action.</b> Policy now also leans against the rate of change of income, so it eases off while the recovery is still accelerating. Income settles within a couple of years, inside 96 to 101. This is the mix Phillips argued for. Error score near 40.'],

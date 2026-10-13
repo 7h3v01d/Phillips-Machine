@@ -4,7 +4,7 @@
 
 **A working, visual simulation of Bill Phillips's 1949 hydraulic economy computer, and the same idea rebuilt for Australia in 2026.**
 
-[![Tests](https://github.com/7h3v01d/phillips-machine/actions/workflows/tests.yml/badge.svg)](https://github.com/7h3v01d/phillips-machine/actions/workflows/tests.yml)
+[![CI](https://github.com/7h3v01d/phillips-machine/actions/workflows/ci.yml/badge.svg)](https://github.com/7h3v01d/phillips-machine/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-2fd6c3)](LICENSE)
 [![Live demo](https://img.shields.io/badge/demo-GitHub%20Pages-4be08a)](https://7h3v01d.github.io/phillips-machine/)
 ![No build step](https://img.shields.io/badge/dependencies-none-ffb454)
@@ -64,7 +64,7 @@ The page works offline. Only the JetBrains Mono web font is fetched from Google 
 
 **The board.** Every tank is a stock of money and every pipe a flow per quarter. Dash speed and pipe width show flow size; amber pipes are money being created (bank credit, QE). The production-lag box shows the order backlog between spending and output. The readouts below the board update live.
 
-**Experiments.** Each button applies one shock and explains what to watch. On the modern board, every experiment first resets to October 2026, so runs are directly comparable.
+**Experiments.** Each button applies one shock and explains what to watch. Every experiment first resets its board to a known starting point (a settled 1949 machine, or October 2026), so runs are directly comparable.
 
 | 1949 board | 2026 board |
 |---|---|
@@ -79,7 +79,7 @@ The page works offline. Only the JetBrains Mono web font is fetched from Google 
 
 Both boards integrate the same kind of system: stocks change by inflows minus outflows, with time measured in quarters (step 0.02 q).
 
-Each step has two stages. First the economics proposes flows: how much people want to spend, save, import, lend and so on. Then a small **hydraulic solver** (`solveFlows` in [`engines.js`](src/js/engines.js)) checks every tank. A tank can deliver only what it holds plus what flows in during the step, so if its outlets ask for more, all of them are throttled together, like a tank losing pressure. Only then are the stocks updated. No stock is ever clamped, so no money is ever created or destroyed by accident, and the debt ledgers follow the flows that actually ran. The throttle factors are found by a short iteration and then solved exactly as a small linear system, because tanks that feed each other (deposits ⇄ savings) can make plain iteration converge too slowly.
+Each step has two stages. First the economics proposes flows: how much people want to spend, save, import, lend and so on. Then a small **hydraulic solver** (`solveFlows` in [`engines.js`](src/js/engines.js)) checks every tank. A tank can deliver only what it holds plus what flows in during the step, so if its outlets ask for more, all of them are throttled together, like a tank losing pressure. Only then are the stocks updated. No stock is repaired by clamping after an impossible transfer (the only normalisation is floating-point residue smaller than 10⁻⁹ being set to zero), so no money is created or destroyed by accident, and the debt ledgers follow the flows that actually ran. The throttle factors are solved exactly: for the tanks that are short, outflow × factor = stock + inflow is a small linear system (at most four equations), and the set of short tanks is adjusted until it is stable, usually in one or two passes. Plain iteration was used before 1.3 and could crawl when nearly empty tanks feed each other (deposits ⇄ savings).
 
 Each step keeps two records. `st.desired` is what the economy wanted to do; `st.f` is what actually happened, and it is what the board, readouts and recorders show. They are identical until a tank runs short; then the tank is labelled **RUNNING DRY** with the share of its payments that got through, and every displayed identity (consumption + saving = disposable income, spending − income = the change in deposits) still adds up exactly.
 
@@ -145,6 +145,7 @@ The calibration lives in the `K` constants and `init()` of the modern engine in 
 
 ```bash
 node --test                    # engine tests (or: npm test, or test.bat on Windows)
+node tools/check_isolation.js  # every engine test again, each on its own in a fresh process
 python -m pytest tests/browser # browser smoke tests (see tests/browser/requirements.txt)
 ```
 
@@ -152,14 +153,16 @@ The tests are split by what they can and cannot prove.
 
 | Category | File | What it establishes |
 |---|---|---|
-| **1. Invariants** | `tests/invariants.test.js` | Money is conserved **at every step** on both boards: across 300 seeded random combinations of legal slider settings each, with every tank forced empty, through every experiment, and in 80- and 400-quarter random runs. All state stays finite; stocks, bonds, RBA holdings, household debt and output never go negative; the debt ledgers match the flows that actually ran; and what the board **displays** reconciles exactly with what moved the stocks, including when tanks are throttled. The flow solver has its own unit test for near-empty tanks that feed each other. |
+| **1. Invariants** | `tests/invariants.test.js` | Money is conserved **at every step** on both boards: across 300 seeded random combinations of legal slider settings each, with every tank forced empty, through every experiment, and in 80- and 400-quarter random runs. In every one of those runs, at every step, all state stays finite and the money tanks, private bonds, RBA holdings, household debt and output are checked to be non-negative; the debt ledgers match the flows that actually ran; and what the board **displays** reconciles exactly with what moved the stocks, including when tanks are throttled. The flow solver is checked against an independent brute-force reference on 3,000 random tank networks, and on near-empty tanks that feed each other. |
 | **2. Behavioural properties** | `tests/invariants.test.js` | Mechanisms point the right way: confidence and the saving ratio move money between spending and saving without changing disposable income; a higher cash rate lowers credit and investment; QE swaps bonds for deposits one-for-one and never buys bonds that don't exist; surpluses retire debt and then build a government account; the rule reads underlying, not headline, inflation; and every slider can reach its own minimum, maximum and default. |
-| **3. Regression** | `tests/engines.test.js`, plus pinned cases in `invariants.test.js` | The calibration starts at the published figures, every number quoted in an experiment caption still comes out of the model, and previously found failures (such as a century of frozen high rates that once diverged) stay fixed. These pin behaviour so changes are deliberate; they do not validate the economics. |
+| **3. Regression** | `tests/engines.test.js`, plus pinned cases in `invariants.test.js` | The calibration starts at the published figures, every claim in every experiment caption on both boards still comes out of the model, and previously found failures (such as a century of frozen high rates that once diverged) stay fixed. These pin behaviour so changes are deliberate; they do not validate the economics. |
 | **Browser smoke** | `tests/browser/test_smoke.py` | Run against both `src/` and the bundled single file: no console errors, canvases draw, every slider and toggle drives its parameter, scenarios and reset update UI and engine together, pause works, mode persists across reloads, reduced-motion is honoured, no horizontal scroll at phone width. |
 
-The random tests use fixed seeds, so any failure reproduces exactly and prints the settings that caused it. Every fix was checked the other way round too: the tests written for it fail on the code before the fix. The engine suite takes about a minute, most of it in the long runs.
+The random tests use fixed seeds, so any failure reproduces exactly and prints the settings that caused it. Every fix was checked the other way round too: the tests written for it fail on the code before the fix.
 
-CI runs the engine tests on Node 18, 20 and 22 and the browser suite in Chromium. The Pages workflow refuses to deploy if the engine tests fail.
+Tests are hermetic. Every experiment, on both boards, starts from its own known state whatever ran before (a test checks this), and `tools/check_isolation.js` runs each test alone in a fresh process to prove no test relies on another. The checker is itself tested (`tests/tooling.test.js`): it fails if a test file crashes during discovery, if a test cannot be re-run on its own, or if a test hangs past its time limit, rather than reporting those as passes. The same file checks that `package.json`, `CITATION.cff` and the changelog agree on the version. The full engine suite takes about a minute, a third of it in the checker's own tests, which deliberately run hanging and crashing test files.
+
+CI runs the engine tests on Node 18, 20 and 22, the isolation check, and the browser suite in Chromium. GitHub Pages deploys only when all of them pass on the same commit.
 
 ## Project structure
 
@@ -173,9 +176,9 @@ phillips-machine/
 │       ├── engines.js       the two simulation engines, controls and experiments
 │       └── app.js           mode switch, UI, recorders, animation loop
 ├── tests/                   engine tests (node:test) + browser/ smoke tests (pytest + Playwright)
-├── tools/build_single_file.py   bundles src/ into one portable HTML file
+├── tools/                   build_single_file.py (portable single HTML) · check_isolation.js
 ├── docs/img/                screenshots
-├── .github/workflows/       tests + GitHub Pages deploy
+├── .github/workflows/ci.yml tests, isolation, browser smoke, then (only if all pass) Pages deploy
 ├── serve.bat · test.bat     Windows helpers
 ├── CHANGELOG.md · CITATION.cff · NOTICE · LICENSE
 ```
