@@ -15,7 +15,8 @@ function solveFlows(stocks, edges, dt){
   const dir = edges.map(e => e.q >= 0 ? { src:e.from, dst:e.to, mag:e.q } : { src:e.to, dst:e.from, mag:-e.q });
   const k = {}; for (const n in stocks) k[n] = 1;
   const factor = n => (n !== null && n in k) ? k[n] : 1;
-  for (let it = 0; it < 500; it++){
+  // Fast iteration gives a good first guess at which tanks are short...
+  for (let it = 0; it < 200; it++){
     let change = 0;
     for (const n in stocks){
       let inflow = 0, out = 0;
@@ -25,6 +26,25 @@ function solveFlows(stocks, edges, dt){
       change = Math.max(change, k[n] - next); k[n] = next;
     }
     if (change < 1e-15) break;
+  }
+  // ...but tanks that feed each other (deposits ⇄ savings) can make it converge slowly, so finish exactly:
+  // for the short tanks, outflow·k = stock/dt + inflow is a small linear system, solved directly.
+  for (let pass = 0; pass < 8; pass++){
+    const A = Object.keys(k).filter(n => k[n] < 1);
+    if (!A.length) break;
+    const ix = {}; A.forEach((n, i) => ix[n] = i);
+    const Mx = A.map(() => A.map(() => 0)), b = A.map(n => stocks[n]/dt);
+    A.forEach((n, i) => {
+      for (const d of dir){
+        if (d.src === n) Mx[i][i] += d.mag;
+        if (d.dst === n){ if (d.src !== null && d.src in ix) Mx[i][ix[d.src]] -= d.mag; else b[i] += d.mag*factor(d.src); }
+      }
+    });
+    const x = gaussSolve(Mx, b);
+    if (!x) break;
+    let freed = false;
+    A.forEach((n, i) => { let v = x[i] > 0 ? x[i] : 0; if (v >= 1){ v = 1; freed = true; } k[n] = v; });
+    if (!freed) break;                         // a tank that turned out not to be short leaves the system; resolve
   }
   const q = dir.map((d, i) => (edges[i].q >= 0 ? 1 : -1) * d.mag*factor(d.src));
   // integrate with the feasible flows
@@ -37,6 +57,18 @@ function solveFlows(stocks, edges, dt){
   const out = { k, created, by:{} };
   edges.forEach((e, i) => { if (e.k) out.by[e.k] = q[i]; });
   return out;
+}
+
+// Gaussian elimination with partial pivoting for the (at most four-tank) throttle system.
+function gaussSolve(A, b){
+  const n = b.length, M = A.map((r, i) => [...r, b[i]]);
+  for (let c = 0; c < n; c++){
+    let piv = c; for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[piv][c])) piv = r;
+    if (Math.abs(M[piv][c]) < 1e-300) return null;
+    [M[c], M[piv]] = [M[piv], M[c]];
+    for (let r = 0; r < n; r++){ if (r === c) continue; const f = M[r][c]/M[c][c]; for (let j = c; j <= n; j++) M[r][j] -= f*M[c][j]; }
+  }
+  return M.map((r, i) => r[n]/r[i]);
 }
 
 /* ================= ENGINE 1: Phillips 1949 ================= */
@@ -82,6 +114,7 @@ const CLASSIC = (() => {
     ], dt);
     Object.assign(st, tanks);
     st.acct = { created: sol.created, k: sol.k };
+    st.desired = { Y:Yp, T:T0, S:S0, C:C0, Im:Im0, I:I0, G:G0, X:X0, borrow:borrow0, repay:repay0, omo:p.omo };
     const q = sol.by, kY = sol.k.TB;           // kY < 1 only when the transactions tank runs dry
     const Y = Yp*kY, T = q.T, S = q.S, Im = q.Im, Yd = Y - T, Cn = Yd - S, Cdom = Cn - Im;
     const I = q.I, G = q.G, X = q.X, Ex = Cdom + I + G + X;
@@ -133,6 +166,7 @@ const CLASSIC = (() => {
     drawTank(ctx, tanks.SB, st.SB, {t:'idle money → sets r'});
     drawTank(ctx, tanks.FB, st.FB, {t:`exch. rate ${f.e.toFixed(2)}`});
     drawTank(ctx, tanks.TB, st.TB, {t:`money stock ${(st.TB+st.SB+st.Tr+st.FB).toFixed(0)}`, c:C.muted});
+    if (st.acct) for (const n of ['Tr','SB','FB','TB']) drawThrottle(ctx, tanks[n], st.acct.k[n]);
     drawValve(ctx, 280, 90, 't', p.tax);
     drawValve(ctx, 280, 170, 's', p.s);
     drawValve(ctx, 280, 290, 'm', clamp(p.m/Math.pow(f.e,0.6),0,0.9));
@@ -243,7 +277,7 @@ const MODERN = (() => {
     G:28.5, tax:.284, s:.065, credit:1, spread:2.0, conf:0, cp:1, iw:3.75, oil:1, Tprod:2, acc:0, speed:1 };
   const p = {...DEFAULTS};
   const K = { Ypot:100, rn:.6, nairu:4.5, kappa:.25, lam:.12, anchor:.10, Tmort:75, depSp:-1, X0:24.7, m:.345,
-    L0:5.3, Ib0:12.6, aL:.10, aI:.06, SV0:150, FB0:40, AUD0:.70, bn:7.3 };
+    L0:5.3, Ib0:12.6, aL:.10, aI:.06, SV0:150, FB0:40, AUD0:.70, bn:7.3, piFloor:5 };
   const rr0 = 4.6 - 3.5;
   const Ln = K.L0 / (1 - K.aL*(rr0 - K.rn));
   const Ibn = K.Ib0 / (1 - K.aI*(rr0 - K.rn));
@@ -255,9 +289,9 @@ const MODERN = (() => {
     // Yout 99.8 puts unemployment at 4.6% (Aug 2026). pi is underlying (trimmed-mean) inflation, 3.6%;
     // headline CPI = pi + hE = 4.0%, the extra 0.4 being fuel and electricity.
     E.st = {Yout:99.8, TB:99.8,
-      SV:K.SV0, FB:K.FB0, D:400, B:106, Bcb:30, e:1, eSlow:1, oilI:1, oilSlow:1,
+      SV:K.SV0, FB:K.FB0, GA:0, D:400, B:106, Bcb:30, e:1, eSlow:1, oilI:1, oilSlow:1,
       i:4.6, pi:3.6, hE:0.4, pie:3.5, Ysm:99.8, dYsm:0, t:0, nextMeet:0.4, log:[], hist:[], nextSample:0, f:{}};
-    E.st.f = flows(E.st); E.st.f.istar = ruleRate(E.st, E.st.f.gap);
+    E.st.f = flows(E.st); E.st.f.istar = ruleRate(E.st, E.st.f.gap); E.st.desired = E.st.f;
   };
   function ruleRate(st, gap){ return K.rn + st.pi + p.phiPi*(st.pi - p.target) + p.phiY*gap; }
   function flows(st){
@@ -283,7 +317,7 @@ const MODERN = (() => {
     const Kin = (K.m*69.8 - K.X0) + 1.0*((i - p.iw) - 0.85);
     return {Y,gap,u,i,rreal,rb,T,Tn,MI,R,Bint,DI,Div,Ret,Yd,S,C:Cn,L,Ib,M,X,G,E:Ex,Def,q,Kin,
       MP:MI+R, Div2:0.5*Div, DIsv:DI+0.5*Div, Cd:Cn-M, pi:st.pi, cpi:st.pi + st.hE, pie:st.pie, aud:K.AUD0*st.e,
-      mort:i+p.spread, hhDebt:st.D/4, pubDebt:(st.B+st.Bcb)/4, rbaBonds:st.Bcb/4, nx:X-M, gdpBn:Y*K.bn,
+      mort:i+p.spread, hhDebt:st.D/4, pubDebt:(st.B+st.Bcb)/4, rbaBonds:st.Bcb/4, govAcct:st.GA/4, nx:X-M, gdpBn:Y*K.bn,
       backlog: st.TB - st.Yout, cash:i};
   }
   // calibrate retained earnings so spending equals output at neutral settings
@@ -294,30 +328,49 @@ const MODERN = (() => {
   })();
   E.step = (dt) => {
     const s = E.st, f = flows(s);
-    // Bond-ledger limits: the RBA cannot buy bonds nobody holds, or sell bonds it does not own.
+    s.desired = f;                             // what the economy wants to do this step
+    const gN = (2 + s.pi)/400;                 // nominal growth erodes debt ratios
+    // Government financing. Deficits draw on the government account first, then sell bonds out of savings.
+    // Surpluses buy back privately held bonds first; once those are gone the surplus builds the government
+    // account. Privately held bonds therefore never go negative and nobody pays the government bond interest.
+    let fromGA = 0, bond = 0, repay = 0, accum = 0;
+    if (f.Def >= 0){ fromGA = Math.min(f.Def, s.GA/dt); bond = f.Def - fromGA; }
+    else { const sur = -f.Def; repay = Math.min(sur, Math.max(0, s.B/dt - gN*s.B)); accum = sur - repay; }
+    // RBA bond trades: it can only buy bonds private holders still own, and only sell bonds it holds.
     let qWant = f.q;
-    const gN0 = (2 + s.pi)/400;
-    if (qWant > 0) qWant = Math.min(qWant, Math.max(0, s.B/dt - gN0*s.B + Math.max(0, f.Def)));
-    else qWant = Math.max(qWant, -(s.Bcb/dt - gN0*s.Bcb));
+    if (qWant > 0) qWant = Math.min(qWant, Math.max(0, s.B/dt - gN*s.B - repay));
+    else qWant = Math.max(qWant, -Math.max(0, s.Bcb/dt - gN*s.Bcb));
     // Pipes between money tanks; `null` is outside the economy (bank credit creation and repayment, RBA reserves).
     // Taxes, government spending financed by those taxes, bank interest paid back out and domestic consumption
     // all leave and re-enter the deposits tank, so they are not edges.
-    const tanks = { TB:s.TB, SV:s.SV, FB:s.FB };
+    const tanks = { TB:s.TB, SV:s.SV, FB:s.FB, GA:s.GA };
     const sol = solveFlows(tanks, [
       {k:'S',   from:'TB', to:'SV', q:f.S},   {k:'Ret', from:'TB', to:'SV', q:f.Ret}, {k:'DIsv', from:'TB', to:'SV', q:f.DIsv},
-      {k:'Ib',  from:'SV', to:'TB', q:f.Ib},  {k:'Def', from:'SV', to:'TB', q:f.Def},
+      {k:'Ib',  from:'SV', to:'TB', q:f.Ib},
+      {k:'GAdef', from:'GA', to:'TB', q:fromGA}, {k:'Bond', from:'SV', to:'TB', q:bond},
+      {k:'Repay', from:'TB', to:'SV', q:repay},  {k:'Accum', from:'TB', to:'GA', q:accum},
       {k:'M',   from:'TB', to:'FB', q:f.M},   {k:'X',   from:'FB', to:'TB', q:f.X},   {k:'Kin', from:'FB', to:'SV', q:f.Kin},
       {k:'L',   from:null, to:'TB', q:f.L},   {k:'R',   from:'TB', to:null, q:f.R},   {k:'q',   from:null, to:'SV', q:qWant}
     ], dt);
     Object.assign(s, tanks);
-    const a = sol.by;
-    s.acct = { created: sol.created, k: sol.k, L:a.L, R:a.R, q:a.q, Def:a.Def };
+    const a = sol.by, kTB = sol.k.TB;
+    const defAct = a.GAdef + a.Bond - a.Repay - a.Accum;
+    s.acct = { created: sol.created, k: sol.k, L:a.L, R:a.R, q:a.q, Def:defAct, bondNet:a.Bond - a.Repay };
     // Ledgers (records, not water) follow the flows that actually happened.
-    const gN = gN0;                            // nominal growth erodes debt ratios
     s.D += (a.L - a.R)*dt;
-    s.B += (a.Def - a.q - gN*s.B)*dt;
+    s.B += (a.Bond - a.Repay - a.q - gN*s.B)*dt;
     s.Bcb += (a.q - gN*s.Bcb)*dt;
-    if (s.Bcb < 0 && s.Bcb > -1e-9) s.Bcb = 0;   // float round-off only
+    if (s.B < 0 && s.B > -1e-9) s.B = 0;       // float round-off only
+    if (s.Bcb < 0 && s.Bcb > -1e-9) s.Bcb = 0;
+    // The executed flow record. If the deposits tank ran short, everything paid out of it (income and all of
+    // its uses) was delivered at the same fraction kTB; the other pipes report what the solver let through.
+    // Built this way, C + S = Yd and (E − Y)·dt = Δdeposits hold exactly for what the board displays.
+    const act = { ...f };
+    for (const key of ['Y','T','Bint','Tn','MI','DI','Div','Div2','Ret','Yd']) act[key] = f[key]*kTB;
+    Object.assign(act, { S:a.S, DIsv:a.DIsv, R:a.R, M:a.M, Ib:a.Ib, X:a.X, Kin:a.Kin, q:a.q, L:a.L, Def:defAct,
+      GAdef:a.GAdef, Bond:a.Bond, Repay:a.Repay, Accum:a.Accum, throttle:sol.k });
+    act.C = act.Yd - act.S; act.G = act.Tn + defAct; act.Cd = act.C - act.M; act.MP = act.MI + act.R;
+    act.E = act.C + act.Ib + act.L + act.G + act.X - act.M; act.nx = act.X - act.M; act.gdpBn = act.Y*K.bn;
     // Exchange rate
     const eT = clamp(1 - 0.15*(s.FB - K.FB0)/K.FB0 + 0.3*(p.cp - 1), .55, 1.6);
     s.e += (eT - s.e)*dt/3; s.eSlow += (s.e - s.eSlow)*dt/4;
@@ -327,7 +380,10 @@ const MODERN = (() => {
     s.oilSlow += (s.oilI - s.oilSlow)*dt/4;
     s.hE += (4*(s.oilI/s.oilSlow - 1) - s.hE)*dt/0.5;
     // Underlying inflation: expectations, the output gap, AUD pass-through and second-round energy effects.
-    const piT = s.pie + K.kappa*f.gap - 10*(s.e - s.eSlow) + 0.3*s.hE;
+    const piRaw = s.pie + K.kappa*f.gap - 10*(s.e - s.eSlow) + 0.3*s.hE;
+    // Wages and prices are sticky downwards: deflation saturates smoothly toward −5% a year instead of
+    // running away (without this, a frozen high cash rate can drive a century-long debt-deflation spiral).
+    const piT = piRaw >= 0 ? piRaw : -K.piFloor*(1 - Math.exp(piRaw/K.piFloor));
     s.pi += (piT - s.pi)*dt/2.0;
     // Households and firms form expectations from the headline number they see, anchored by the target.
     s.pie += (K.lam*((s.pi + s.hE) - s.pie) + K.anchor*(p.target - s.pie))*dt;
@@ -345,10 +401,7 @@ const MODERN = (() => {
       if (s.log.length > 120) s.log.shift();
       s.i = clamp(s.i + mv, .1, 15);
     }
-    s.f = Object.assign(flows(s), { istar });
-    // Pipes show the flows that actually ran this step.
-    for (const key of ['S','Ret','DIsv','Ib','Def','M','X','Kin','R','q']) s.f[key] = a[key];
-    s.f.MP = s.f.MI + a.R; s.f.Cd = s.f.C - a.M;
+    s.f = Object.assign(act, { istar });     // the board shows what actually ran this step
     if (s.t >= s.nextSample){
       s.hist.push({t:s.t, Y:s.Yout, i:s.i, pi:s.pi, cpi:s.pi + s.hE, u:s.f.u, pie:s.pie});
       if (s.hist.length > 480) s.hist.shift();
@@ -408,11 +461,12 @@ const MODERN = (() => {
     ctx.font=`800 17px ${FONT}`; ctx.fillStyle=C.text; ctx.fillText(`${s.i.toFixed(2)}%`, 411, 65);
     ctx.font=`500 8px ${FONT}`; ctx.fillStyle=C.muted; ctx.fillText(p.rule ? 'cash rate · rule' : 'cash rate · manual', 411, 86);
     // Government
+    const bondNet = (f.Bond ?? Math.max(0, f.Def)) - (f.Repay ?? 0);
     drawBox(ctx, 20, 95, 120, 70, 'GOVERNMENT', [
-      {t:`deficit ${f.Def.toFixed(1)}/q`, c: f.Def > 0 ? C.amber : C.phosphor},
-      {t:`bonds sold ${Math.max(0,f.Def - f.q).toFixed(1)}/q`, c:C.muted},
+      {t:`${f.Def >= 0 ? 'deficit' : 'surplus'} ${Math.abs(f.Def).toFixed(1)}/q`, c: f.Def > 0 ? C.amber : C.phosphor},
+      {t:`bonds ${bondNet >= 0 ? 'sold' : 'bought back'} ${Math.abs(bondNet).toFixed(1)}/q`, c:C.muted},
       {t:`interest ${f.Bint.toFixed(1)}/q`, c:C.muted},
-      {t:`taxes net ${f.Tn.toFixed(1)}/q`, c:C.muted}], C.text);
+      {t:`account ${s.GA.toFixed(1)}`, c: s.GA > 0.05 ? C.phosphor : C.muted}], C.text);
     // Banks
     drawBox(ctx, 60, 185, 110, 55, 'BANKS', [
       {t:`mortgage ${f.mort.toFixed(2)}%`, c:C.text},
@@ -421,6 +475,7 @@ const MODERN = (() => {
     drawTank(ctx, tanks.SV, s.SV, {t:`bond yield ${f.rb.toFixed(2)}%`});
     drawTank(ctx, tanks.FB, s.FB, {t:`AUD ${f.aud.toFixed(3)} US`});
     drawTank(ctx, tanks.TB, s.TB, {t:`GDP A$${f.gdpBn.toFixed(0)}bn/q`, c:C.muted});
+    if (f.throttle) for (const n of ['SV','FB','TB']) drawThrottle(ctx, tanks[n], f.throttle[n]);
     // Underlying-inflation thermometer with the 2–3% target band; headline CPI printed beneath
     drawGauge(ctx, 512, 250, 140, clamp(s.pi/8, 0, 1), 'TRIM %', s.pi.toFixed(2), [2/8, 3/8]);
     ctx.font=`500 9px ${FONT}`; ctx.fillStyle=C.muted; ctx.textBaseline='top'; ctx.textAlign='left';
@@ -519,4 +574,4 @@ const MODERN = (() => {
 })();
 
 // Expose engines for the headless test-suite (Node) without affecting the browser build.
-globalThis.MONIAC_ENGINES = { CLASSIC, MODERN };
+globalThis.MONIAC_ENGINES = { CLASSIC, MODERN, solveFlows };

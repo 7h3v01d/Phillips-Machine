@@ -139,4 +139,10 @@ function drawLedger(ctx, x, y, w, label, pct, maxPct, rbaPct){
   }
   ctx.strokeStyle = C.red; ctx.lineWidth = 1; ctx.strokeRect(x+.5, by+.5, w-1, bh-1);
 }
+// When the solver throttles a tank, say so on the tank: the pipes are showing executed flows, not wishes.
+function drawThrottle(ctx, t, k){
+  if (!(k < 0.995)) return;
+  ctx.font = `700 9px ${FONT}`; ctx.fillStyle = C.red; ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+  ctx.fillText(`RUNNING DRY · ${Math.round(k*100)}% PAID OUT`, t.x+5, t.y+t.h-27);
+}
 function bridge(ctx, x, y){ ctx.fillStyle = C.deep; ctx.fillRect(x-3, y-8, 6, 16); }
