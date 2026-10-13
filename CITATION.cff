@@ -1,0 +1,53 @@
+cff-version: 1.2.0
+message: "If you use this simulation in teaching or research, please cite it as below."
+title: "Phillips Machine: a working simulation of the 1949 MONIAC and a modern Australian economy"
+type: software
+authors:
+  - family-names: Priest
+    given-names: Leon
+    alias: 7h3v01d
+license: Apache-2.0
+repository-code: "https://github.com/7h3v01d/phillips-machine"
+url: "https://7h3v01d.github.io/phillips-machine/"
+version: 1.0.0
+date-released: 2026-10-13
+keywords:
+  - MONIAC
+  - Phillips machine
+  - Phillips curve
+  - macroeconomics
+  - simulation
+references:
+  - type: article
+    title: "Mechanical Models in Economic Dynamics"
+    authors:
+      - family-names: Phillips
+        given-names: A. W.
+    journal: Economica
+    volume: 17
+    issue: 67
+    start: 285
+    end: 305
+    year: 1950
+  - type: article
+    title: "Stabilisation Policy in a Closed Economy"
+    authors:
+      - family-names: Phillips
+        given-names: A. W.
+    journal: "The Economic Journal"
+    volume: 64
+    issue: 254
+    start: 290
+    end: 323
+    year: 1954
+  - type: article
+    title: "The Relation between Unemployment and the Rate of Change of Money Wage Rates in the United Kingdom, 1861-1957"
+    authors:
+      - family-names: Phillips
+        given-names: A. W.
+    journal: Economica
+    volume: 25
+    issue: 100
+    start: 283
+    end: 299
+    year: 1958

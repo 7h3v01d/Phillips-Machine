@@ -1,0 +1,173 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: Apache-2.0 · Copyright 2026 Leon Priest (github.com/7h3v01d) -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="A working, visual simulation of Bill Phillips's 1949 MONIAC hydraulic economy computer, plus a modern Australian version with an inflation-targeting central bank, bank credit, QE and a floating dollar.">
+<title>Phillips Machine MONIAC</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&display=swap">
+<link rel="stylesheet" href="css/moniac.css">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="head-left">
+      <h1>PHILLIPS MACHINE <span>/ MONIAC</span></h1>
+      <div class="sub" id="sub"></div>
+    </div>
+    <div class="head-right">
+      <div class="modes" role="group" aria-label="Choose the economy">
+        <button id="mode-classic" aria-pressed="false">1949 · Phillips original</button>
+        <button id="mode-modern" aria-pressed="false">2026 · Modern Australia</button>
+      </div>
+      <div class="clock" id="clock" aria-live="off">–</div>
+    </div>
+  </header>
+
+  <div class="grid">
+    <section class="panel" aria-label="The machine">
+      <h2><span id="boardTitle">Hydraulic board</span> <b id="statusTag">PUMP RUNNING</b></h2>
+      <canvas id="machine" role="img" aria-label="Animated hydraulic diagram of the economy: tanks of money joined by pipes whose flows are income, taxes, saving, spending, credit, imports and exports."></canvas>
+      <div class="readouts" id="readouts"></div>
+    </section>
+
+    <div class="col">
+      <section class="panel" aria-label="Experiments">
+        <h2>Experiments</h2>
+        <div class="scen" id="scen"></div>
+        <div class="caption" id="caption"></div>
+      </section>
+
+      <section class="panel" aria-label="Chart recorder">
+        <h2>Chart recorder <b>15-year strip</b></h2>
+        <canvas id="recorder" class="plot"></canvas>
+        <div class="legend" id="recLegend"></div>
+      </section>
+
+      <section class="panel" aria-label="Treasury governor" id="govPanel">
+        <h2>Treasury governor <b>P · I · D, Phillips 1954</b></h2>
+        <div class="gov-head">
+          <span class="gov-state off" id="govState">GOVERNOR OFF</span>
+          <span>Error score (∫|gap| dt since last shock): <span class="score" id="iaeOut">0</span></span>
+        </div>
+        <canvas id="govplot" class="plot"></canvas>
+        <div class="legend">
+          <span><i style="background:var(--phosphor)"></i>Income gap (target − Y)</span>
+          <span><i style="background:var(--red)"></i>Policy demand ΔG</span>
+          <span><i style="background:var(--amber)"></i>Actual ΔG after policy lag</span>
+        </div>
+      </section>
+
+      <section class="panel" aria-label="Reserve Bank board" id="rbaPanel" hidden>
+        <h2>Reserve Bank board <b>8 meetings a year</b></h2>
+        <div class="rba-top">
+          <span class="rba-rate" id="rbaRate">4.60%</span>
+          <span class="rba-mode" id="rbaMode">INFLATION-TARGETING RULE</span>
+          <span style="color:var(--muted);font-size:11.5px" id="rbaNext"></span>
+        </div>
+        <div class="rule" id="rbaRule"></div>
+        <ul class="log" id="rbaLog"></ul>
+      </section>
+
+      <section class="panel" aria-label="Phillips curve">
+        <h2><span id="pcTitle">Phillips curve</span> <b id="pcTag">Economica 1958</b></h2>
+        <canvas id="pcurve" class="plot"></canvas>
+        <div class="legend" id="pcLegend"></div>
+      </section>
+    </div>
+  </div>
+
+  <section class="panel" style="margin-top:16px" aria-label="Valves and controls">
+    <h2>Valve settings <span class="row" style="margin:0">
+      <button class="primary" id="runBtn">Pause pump</button>
+      <button id="resetBtn">Reset</button>
+    </span></h2>
+    <div class="ctl-groups" id="controls"></div>
+  </section>
+
+  <div class="notes" id="notesClassic">
+    <div>
+      <h3>How the 1949 machine computes</h3>
+      <p>Every tank is a stock of money and every pipe a flow per quarter. The pump lifts the transactions balances to the top as national income <code>Y</code>. Slotted valves split it: taxes <code>tY</code> to the Treasury, saving <code>s(Y−T)</code> to surplus balances, imports <code>m·C</code> to foreign-held balances. The rest is domestic consumption, which falls back with government spending, investment and exports to refill the transactions tank.</p>
+      <p>Phillips's float trick is kept: the water level in the surplus-balances tank sets the interest rate (more idle money, lower <code>r</code>), and <code>r</code> throttles the investment valve. With a floating rate, foreign balances move the exchange rate, which moves exports and imports.</p>
+    </div>
+    <div>
+      <h3>Equations</h3>
+      <ul>
+        <li><code>dTB/dt = C − Im + I + G + X − Y</code>; output follows spending power through the production lag, <code>dY/dt = (TB − Y)/τp</code></li>
+        <li><code>dSB/dt = S − I + open-market flow − deficit borrowing</code></li>
+        <li><code>r = 12 − 0.14·SB</code> (0.5 to 15%), <code>I = 12 + b(5 − r) + a·dY/dt</code></li>
+        <li><code>e = 1 + 0.6(FB − 40)/40</code>, <code>X = X₀·e^0.9</code>, import share <code>m/e^0.6</code></li>
+        <li>Unemployment <code>u = 1.5 + 30(1 − Y/105)</code>%, an illustrative link to the 1958 curve</li>
+        <li>Governor: demand <code>D = Kp·gap + Ki·∫gap + Kd·d(gap)/dt</code>, actual <code>dΔG/dt = (D − ΔG)/τ</code>, spending <code>G = G₀ + ΔG</code></li>
+      </ul>
+      <p>Coefficients are chosen so a 1949-ish steady state near Y≈100 exists; they are not Phillips's UK calibration.</p>
+    </div>
+    <div>
+      <h3>Sources</h3>
+      <ul>
+        <li>Phillips, A.W. (1950) “Mechanical Models in Economic Dynamics”, <i>Economica</i> 17(67), 285–305.</li>
+        <li>Phillips, A.W. (1954) “Stabilisation Policy in a Closed Economy”, <i>Economic Journal</i> 64(254), 290–323.</li>
+        <li>Phillips, A.W. (1958) “The Relation between Unemployment and the Rate of Change of Money Wage Rates in the United Kingdom, 1861–1957”, <i>Economica</i> 25(100), 283–299.</li>
+        <li><a href="https://www.rbnz.govt.nz/-/media/project/sites/rbnz/files/publications/factsheets-and-guides/factsheet-bill-phillips-and-the-moniac.pdf" target="_blank" rel="noopener">Reserve Bank of New Zealand: Bill Phillips and the MONIAC</a></li>
+        <li><a href="https://econ.cam.ac.uk/node/1383" target="_blank" rel="noopener">Cambridge Faculty of Economics: the working Phillips machine</a></li>
+        <li><a href="https://en.wikipedia.org/wiki/Phillips_Machine" target="_blank" rel="noopener">Phillips Machine overview</a> (LSE's original is in the Science Museum, London)</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="notes" id="notesModern" hidden>
+    <div>
+      <h3>What changed since 1949</h3>
+      <p>The central bank no longer rations a stock of money. It sets the cash rate to steer inflation toward 2–3%, using a rule that responds to inflation and the output gap, and it moves in 25-point steps at eight meetings a year. That is the RBA box at the top of the board.</p>
+      <p>Most money is now created by commercial banks when they lend. New mortgage credit is a tap that adds water to the economy; repayments drain it away. Mortgage interest is the Australian cash-flow channel: higher rates pull money out of borrowers' spending almost immediately.</p>
+      <p>Deficits are financed by selling bonds out of savings, and the RBA can buy bonds (QE) to inject money when the cash rate hits its floor. Capital flows chase the gap between Australian and US rates and move the dollar, which moves exports, imports and imported inflation.</p>
+    </div>
+    <div>
+      <h3>Calibration, October 2026</h3>
+      <div class="tablewrap"><table class="calib">
+        <tr><td>Cash rate (raised 30 Sep 2026)</td><td>4.60%</td></tr>
+        <tr><td>CPI, year to Aug 2026 / trimmed mean</td><td>4.0% / 3.6%</td></tr>
+        <tr><td>Unemployment, Aug 2026</td><td>4.6%</td></tr>
+        <tr><td>NAIRU / neutral cash rate (RBA staff, 2025)</td><td>≈4.5% / ≈3.1%</td></tr>
+        <tr><td>Household saving ratio, Jun qtr 2026</td><td>6.5%</td></tr>
+        <tr><td>Household consumption / gov. spending / business inv. / dwellings, % GDP</td><td>51 / 28 / 13 / 5</td></tr>
+        <tr><td>Exports / imports, % GDP</td><td>25 / 24</td></tr>
+        <tr><td>Commonwealth deficit / gross debt 2025–26, % GDP</td><td>1.3 / 34</td></tr>
+        <tr><td>Nominal GDP 2025–26 (one board unit ≈ A$7.3bn a quarter)</td><td>≈A$2.9tn</td></tr>
+        <tr><td>AUD/USD</td><td>≈0.70</td></tr>
+        <tr><td>Household debt, RBA bond holdings, mortgage spread</td><td>approximate</td></tr>
+      </table></div>
+      <p style="margin-top:6px">This is a stylised teaching model calibrated to those figures, not a forecast. It has no trend growth, so the public debt ratio uses the textbook erosion term <code>(2% + inflation)·debt</code>.</p>
+    </div>
+    <div>
+      <h3>Key equations</h3>
+      <ul>
+        <li>RBA rule: <code>i* = 0.6 + π + φπ(π − 2.5) + φy·gap</code>, moved 25bp per meeting</li>
+        <li>Inflation: <code>π → πᵉ + 0.25·gap − AUD pass-through + oil</code>; expectations learn from π and are pulled toward 2.5%</li>
+        <li>Credit: <code>L = credit·L̄(1 − 0.10(i − πᵉ − 0.6))</code>, repayments <code>D/75</code>; mortgage interest <code>(i + spread)·D</code></li>
+        <li>Capital inflow <code>∝ (i − i_US)</code>; AUD follows foreign-held balances and commodity prices</li>
+        <li>Unemployment <code>u = 4.5 − 0.5·gap</code> (Okun)</li>
+      </ul>
+      <h3 style="margin-top:10px">Sources</h3>
+      <ul>
+        <li><a href="https://www.commbank.com.au/articles/newsroom/2026/09/rba-official-cash-rate-decision-september-2026.html" target="_blank" rel="noopener">CommBank: RBA raises cash rate to 4.60%</a></li>
+        <li><a href="https://www.abs.gov.au/media-centre/media-releases/cpi-rose-40-year-august-2026" target="_blank" rel="noopener">ABS: CPI rose 4.0% in the year to August 2026</a></li>
+        <li><a href="https://www.abs.gov.au/media-centre/media-releases/unemployment-rate-rises-46-august" target="_blank" rel="noopener">ABS: Unemployment rate rises to 4.6% in August</a></li>
+        <li><a href="https://www.qgso.qld.gov.au/issues/3381/national-accounts-202606.pdf" target="_blank" rel="noopener">QGSO: National accounts, June qtr 2026</a></li>
+        <li><a href="https://treasury.nt.gov.au/__data/assets/pdf_file/0004/1616026/gross-domestic-product-2026-march-quarter.pdf" target="_blank" rel="noopener">NT Treasury: GDP components, March qtr 2026</a></li>
+        <li><a href="https://budget.gov.au/content/myefo/download/03_Part_3.pdf" target="_blank" rel="noopener">MYEFO 2025–26, Part 3</a></li>
+        <li><a href="https://www.livewiremarkets.com/wires/the-rba-trims-the-neutral-policy-rate-and-lowers-potential-output-productivity-growth-the-nairu" target="_blank" rel="noopener">Livewire: RBA neutral rate and NAIRU</a></li>
+        <li><a href="https://blog.orbitremit.com/rba-rate-hike-september-2026/" target="_blank" rel="noopener">OrbitRemit: AUD after the September decision</a></li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<script src="js/draw.js"></script>
+<script src="js/engines.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

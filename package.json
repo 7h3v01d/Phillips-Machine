@@ -1,0 +1,22 @@
+{
+  "name": "phillips-machine",
+  "version": "1.0.0",
+  "description": "A working, visual simulation of Bill Phillips's 1949 MONIAC hydraulic economy computer, plus a modern Australian version calibrated to October 2026.",
+  "private": true,
+  "license": "Apache-2.0",
+  "author": "Leon Priest (https://github.com/7h3v01d)",
+  "homepage": "https://7h3v01d.github.io/phillips-machine/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/7h3v01d/phillips-machine.git"
+  },
+  "keywords": ["moniac", "phillips-machine", "phillips-curve", "macroeconomics", "simulation", "economics-education", "rba", "hydraulic-computer"],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test",
+    "serve": "python -m http.server 8000 --directory src",
+    "build": "python tools/build_single_file.py"
+  }
+}
