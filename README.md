@@ -9,7 +9,7 @@
 [![Live demo](https://img.shields.io/badge/demo-GitHub%20Pages-4be08a)](https://7h3v01d.github.io/phillips-machine/)
 ![No build step](https://img.shields.io/badge/dependencies-none-ffb454)
 
-[**Open the live demo →**](https://7h3v01d.github.io/phillips-machine/)
+[**Open the live demo →**](https://7h3v01d.github.io/Phillips-Machine/)
 
 <img src="docs/img/modern.png" alt="The modern Australian board: tanks of money, a Reserve Bank box, bank credit, debt ledgers, chart recorder and Phillips curve" width="100%">
 
